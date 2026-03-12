@@ -101,6 +101,3 @@ class VideoCLIPModel(nn.Module):
     def encode_text(self, input_ids, attention_mask):
         features = self.text_encoder(input_ids=input_ids, attention_mask=attention_mask)
         return self.text_projection(features)
-
-    def apply_prompt(self, image_embeddings, text_embeddings):
-        return image_embeddings, text_embeddings

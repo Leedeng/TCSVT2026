@@ -30,8 +30,6 @@ def train_epoch(model, train_loader, optimizer, lr_scheduler, step, loss_fn, sca
                 input_ids=batch["input_ids"].to(CFG.device),
                 attention_mask=batch["attention_mask"].to(CFG.device),
             )
-            image_embeddings, text_embeddings = model.apply_prompt(image_embeddings, text_embeddings)
-
             text_logits = (text_embeddings @ image_embeddings.T) / CFG.temperature
             image_logits = (image_embeddings @ text_embeddings.T) / CFG.temperature
 
@@ -67,8 +65,6 @@ def valid_epoch(model, valid_loader, test_loader, loss_fn, labels, label_tokens)
                 input_ids=batch["input_ids"].to(CFG.device),
                 attention_mask=batch["attention_mask"].to(CFG.device),
             )
-            image_embeddings, text_embeddings = model.apply_prompt(image_embeddings, text_embeddings)
-
             text_logits = (text_embeddings @ image_embeddings.T) / CFG.temperature
             image_logits = (image_embeddings @ text_embeddings.T) / CFG.temperature
 
@@ -109,8 +105,6 @@ def valid_epoch(model, valid_loader, test_loader, loss_fn, labels, label_tokens)
                     attention_mask=label_tokens["attention_mask"].to(CFG.device),
                 )
             )
-            image_embeddings, text_embeddings = model.apply_prompt(image_embeddings, text_embeddings)
-
             dot_similarity = image_embeddings @ text_embeddings.T
             _, indices_pred = torch.topk(dot_similarity.squeeze(0), 5)
             indices_pred = indices_pred.detach().cpu().numpy()
