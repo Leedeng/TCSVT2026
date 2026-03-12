@@ -1,0 +1,12 @@
+*.pt
+*.out
+__pycache__/
+*.pyc
+log/
+*.mp4
+*.avi
+training_clips/
+testing_clips/
+training_videos/
+testing_videos/
+.DS_Store
