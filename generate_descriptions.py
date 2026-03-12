@@ -64,15 +64,14 @@ def generate_descriptions(client: OpenAI, label: str, all_labels: list[str],
                         {"role": "system", "content": prompt_info["system"]},
                         {"role": "user", "content": prompt_info["user"]},
                     ],
-                    temperature=0.9,
                     max_completion_tokens=100,
                 )
                 desc = response.choices[0].message.content.strip()
                 if desc and 10 < len(desc) < 500:
                     descriptions.append(desc)
             except Exception as e:
-                print(f"  Error for '{label}' ({prompt_info['angle']} #{i}): {e}")
-                time.sleep(2)
+                print(f"  ERROR: {e}")
+                time.sleep(1)
 
     # Deduplicate
     seen = set()

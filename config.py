@@ -24,7 +24,7 @@ class CFG:
     trainable = True
     temperature = 0.05
 
-    frame = 32
+    frame = 16
     height = 224
     width = 224
 

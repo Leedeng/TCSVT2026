@@ -4,7 +4,6 @@ from torchvision.models.video import r2plus1d_18, R2Plus1D_18_Weights
 from transformers import DistilBertModel, DistilBertConfig
 
 from config import CFG
-from module_utils import prompt_utils
 
 
 class VideoEncoder(nn.Module):
@@ -93,7 +92,6 @@ class VideoCLIPModel(nn.Module):
         self.text_encoder = TextEncoder()
         self.image_projection = ProjectionHead(embedding_dim=CFG.image_embedding)
         self.text_projection = ProjectionHead(embedding_dim=CFG.text_embedding)
-        self.prompt_generator = prompt_utils.VideoSpecificPrompt(layers=1, embed_dim=256, alpha=0.1)
         self.temperature = temperature
 
     def encode_image(self, clip):
@@ -105,7 +103,4 @@ class VideoCLIPModel(nn.Module):
         return self.text_projection(features)
 
     def apply_prompt(self, image_embeddings, text_embeddings):
-        img = image_embeddings.unsqueeze(0)
-        txt = text_embeddings.unsqueeze(0)
-        txt = self.prompt_generator(txt, img)
-        return img.squeeze(0), txt.squeeze(0)
+        return image_embeddings, text_embeddings

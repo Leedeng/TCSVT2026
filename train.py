@@ -156,7 +156,6 @@ def main():
         {"params": itertools.chain(
             model.image_projection.parameters(),
             model.text_projection.parameters(),
-            model.prompt_generator.parameters(),
         ), "lr": CFG.head_lr, "weight_decay": CFG.weight_decay},
     ]
     optimizer = torch.optim.AdamW(params, weight_decay=0.)
