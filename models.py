@@ -24,7 +24,7 @@ class VideoEncoder(nn.Module):
         for i in range(1, len(layers) - layer_count):
             pretrained._modules.pop(layers[-i])
 
-        self.net = nn.Sequential(pretrained._modules)
+        self.net = nn.Sequential(*pretrained._modules.values())
         for p in self.net.parameters():
             p.requires_grad = trainable
 
