@@ -65,7 +65,7 @@ def generate_descriptions(client: OpenAI, label: str, all_labels: list[str],
                         {"role": "user", "content": prompt_info["user"]},
                     ],
                     temperature=0.9,
-                    max_tokens=100,
+                    max_completion_tokens=100,
                 )
                 desc = response.choices[0].message.content.strip()
                 if desc and 10 < len(desc) < 500:
