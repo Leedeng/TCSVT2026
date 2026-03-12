@@ -15,4 +15,4 @@ conda activate SPL2023
 DATASET=${1:-SMG}
 TRAIN_CSV=${2:-clip.csv}
 
-srun python train.py --dataset "$DATASET" --train_csv "$TRAIN_CSV"
+python train.py --dataset "$DATASET" --train_csv "$TRAIN_CSV"

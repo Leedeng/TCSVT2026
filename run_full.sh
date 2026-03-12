@@ -18,7 +18,7 @@ TRAIN_CSV=${2:-clip.csv}
 echo "=========================================="
 echo "Stage 1: Contrastive Learning - ${DATASET}"
 echo "=========================================="
-srun python train.py --dataset "$DATASET" --train_csv "$TRAIN_CSV"
+python train.py --dataset "$DATASET" --train_csv "$TRAIN_CSV"
 
 # Find the best checkpoint from stage 1
 BEST_CKPT=$(ls -t *_${DATASET}.pt 2>/dev/null | head -1)
@@ -32,7 +32,7 @@ echo "=========================================="
 echo "Stage 2: Classifier Finetuning - ${DATASET}"
 echo "Using checkpoint: ${BEST_CKPT}"
 echo "=========================================="
-srun python train_finetuned.py --dataset "$DATASET" --checkpoint "$BEST_CKPT"
+python train_finetuned.py --dataset "$DATASET" --checkpoint "$BEST_CKPT"
 
 echo "=========================================="
 echo "Done! ${DATASET}"
