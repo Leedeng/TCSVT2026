@@ -81,32 +81,21 @@ def valid_epoch(model, valid_loader, test_loader, loss_fn, labels, label_tokens)
     total_number = len(test_loader)
     tqdm_object = tqdm(test_loader, total=total_number)
 
+    # Encode all label texts once
+    with torch.no_grad():
+        text_embeddings = model.encode_text(
+            input_ids=label_tokens["input_ids"].to(CFG.device),
+            attention_mask=label_tokens["attention_mask"].to(CFG.device),
+        )
+
     with torch.no_grad():
         for batch in tqdm_object:
             caption = batch["caption"]
             image_embeddings = model.encode_image(batch["clip"].to(CFG.device))
-            # Repeat image features for all labels
-            image_embeddings_repeated = image_embeddings.repeat(len(labels), 1, 1, 1, 1) if image_embeddings.dim() == 5 else image_embeddings.repeat(len(labels), 1)
 
-            # Encode all label texts
-            text_embeddings = model.encode_text(
-                input_ids=label_tokens["input_ids"].to(CFG.device),
-                attention_mask=label_tokens["attention_mask"].to(CFG.device),
-            )
-
-            # For zero-shot: encode image once, repeat for each label
-            image_features = model.image_encoder(batch["clip"].to(CFG.device))
-            image_features = image_features.repeat(len(labels), 1, 1, 1, 1)
-            image_features = image_features.squeeze(-1).squeeze(-1).squeeze(-1)
-            image_embeddings = model.image_projection(image_features)
-            text_embeddings = model.text_projection(
-                model.text_encoder(
-                    input_ids=label_tokens["input_ids"].to(CFG.device),
-                    attention_mask=label_tokens["attention_mask"].to(CFG.device),
-                )
-            )
+            # Compute similarity between image and all label texts
             dot_similarity = image_embeddings @ text_embeddings.T
-            _, indices_pred = torch.topk(dot_similarity.squeeze(0), 5)
+            _, indices_pred = torch.topk(dot_similarity, 5, dim=-1)
             indices_pred = indices_pred.detach().cpu().numpy()
 
             acc_1 += (labels[indices_pred[0][0]] == caption[0])

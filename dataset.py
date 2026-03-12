@@ -38,7 +38,7 @@ class VideoTextDataset(Dataset):
             clip = vr.get_batch(indices).asnumpy()
         else:
             sampled = np.sort(np.random.choice(len(vr), CFG.frame, replace=True))
-            clip = vr.get_batch([sampled]).asnumpy()
+            clip = vr.get_batch(sampled).asnumpy()
 
         item["clip"] = torch.tensor(clip, dtype=torch.float32).permute(0, 3, 1, 2)
         item["caption"] = self.captions[idx]
