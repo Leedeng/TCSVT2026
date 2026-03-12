@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=gen_desc
-#SBATCH --account=project_2006419
+#SBATCH --account=project_2014500
 #SBATCH --partition=small
 #SBATCH --time=01:00:00
 #SBATCH --nodes=1
