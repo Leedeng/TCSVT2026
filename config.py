@@ -1,5 +1,5 @@
 import torch
-from transformers import DistilBertTokenizer
+from transformers import AutoTokenizer
 
 
 class CFG:
@@ -15,10 +15,9 @@ class CFG:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     image_embedding = 512
-    text_encoder_model = "distilbert-base-uncased"
-    text_embedding = 768
-    text_tokenizer = "distilbert-base-uncased"
-    max_length = 200
+    text_encoder_model = "sentence-transformers/all-MiniLM-L6-v2"
+    text_embedding = 384
+    max_length = 128
 
     pretrained = True
     trainable = True
@@ -31,7 +30,10 @@ class CFG:
     projection_dim = 256
     dropout = 0.1
 
-    tokenizer = DistilBertTokenizer.from_pretrained("distilbert-base-uncased")
+    # Classification loss weight for end-to-end training
+    cls_loss_weight = 1.0
+
+    tokenizer = AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
 
 
 class AvgMeter:

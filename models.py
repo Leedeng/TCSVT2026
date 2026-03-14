@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from torchvision.models.video import r2plus1d_18, R2Plus1D_18_Weights
-from transformers import DistilBertModel, DistilBertConfig
+from transformers import AutoModel
 
 from config import CFG
 
@@ -35,16 +35,19 @@ class TextEncoder(nn.Module):
     def __init__(self, model_name=CFG.text_encoder_model, pretrained=CFG.pretrained, trainable=CFG.trainable):
         super().__init__()
         if pretrained:
-            self.model = DistilBertModel.from_pretrained(model_name)
+            self.model = AutoModel.from_pretrained(model_name)
         else:
-            self.model = DistilBertModel(config=DistilBertConfig())
+            self.model = AutoModel.from_pretrained(model_name)
 
         for p in self.model.parameters():
             p.requires_grad = trainable
 
     def forward(self, input_ids, attention_mask):
         output = self.model(input_ids=input_ids, attention_mask=attention_mask)
-        return output.last_hidden_state[:, 0, :]  # CLS token
+        # Mean pooling (standard for sentence-transformers)
+        token_embeddings = output.last_hidden_state
+        input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
+        return torch.sum(token_embeddings * input_mask_expanded, 1) / torch.clamp(input_mask_expanded.sum(1), min=1e-9)
 
 
 class ProjectionHead(nn.Module):
@@ -65,34 +68,25 @@ class ProjectionHead(nn.Module):
         return self.layer_norm(x)
 
 
-class Classifier(nn.Module):
-    """Two-layer projection head used as a classifier for finetuning."""
-    def __init__(self, embedding_dim, num_classes, dropout=CFG.dropout):
-        super().__init__()
-        self.projection = nn.Linear(embedding_dim, num_classes)
-        self.gelu = nn.GELU()
-        self.fc = nn.Linear(num_classes, num_classes)
-        self.dropout = nn.Dropout(dropout)
-        self.layer_norm = nn.LayerNorm(num_classes)
-
-    def forward(self, x):
-        projected = self.projection(x)
-        x = self.gelu(projected)
-        x = self.fc(x)
-        x = self.dropout(x)
-        x = x + projected
-        x = self.layer_norm(x)
-        return self.fc(x)
-
-
 class VideoCLIPModel(nn.Module):
-    def __init__(self, temperature=CFG.temperature):
+    def __init__(self, num_classes=None, temperature=CFG.temperature):
         super().__init__()
         self.image_encoder = VideoEncoder(output_layer="avgpool")
         self.text_encoder = TextEncoder()
         self.image_projection = ProjectionHead(embedding_dim=CFG.image_embedding)
         self.text_projection = ProjectionHead(embedding_dim=CFG.text_embedding)
         self.temperature = temperature
+
+        # Classification head (used in end-to-end training)
+        if num_classes is not None:
+            self.classifier = nn.Sequential(
+                nn.Linear(CFG.projection_dim, CFG.projection_dim),
+                nn.GELU(),
+                nn.Dropout(CFG.dropout),
+                nn.Linear(CFG.projection_dim, num_classes),
+            )
+        else:
+            self.classifier = None
 
     def encode_image(self, clip):
         features = self.image_encoder(clip)
@@ -101,3 +95,13 @@ class VideoCLIPModel(nn.Module):
     def encode_text(self, input_ids, attention_mask):
         features = self.text_encoder(input_ids=input_ids, attention_mask=attention_mask)
         return self.text_projection(features)
+
+    def forward(self, clip, input_ids, attention_mask):
+        image_embeddings = self.encode_image(clip)
+        text_embeddings = self.encode_text(input_ids, attention_mask)
+
+        cls_logits = None
+        if self.classifier is not None:
+            cls_logits = self.classifier(image_embeddings)
+
+        return image_embeddings, text_embeddings, cls_logits
