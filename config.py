@@ -30,9 +30,6 @@ class CFG:
     projection_dim = 256
     dropout = 0.1
 
-    # Classification loss weight for end-to-end training
-    cls_loss_weight = 1.0
-
     tokenizer = AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
 
 

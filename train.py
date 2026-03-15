@@ -5,6 +5,7 @@ import multiprocessing
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn as nn
 from torch.amp import autocast, GradScaler
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.autonotebook import tqdm
@@ -15,7 +16,26 @@ from models import VideoCLIPModel
 from module_utils.loss_utils import KLLoss
 
 
-def train_epoch(model, train_loader, optimizer, lr_scheduler, step, contrastive_loss_fn, cls_loss_fn, scaler):
+class AdaptiveLossWeighter(nn.Module):
+    """Uncertainty-based adaptive loss weighting (Kendall et al., 2018).
+    Learns log(sigma^2) for each task, effective weight = 1/(2*sigma^2)."""
+    def __init__(self, num_tasks=2):
+        super().__init__()
+        self.log_vars = nn.Parameter(torch.zeros(num_tasks))
+
+    def forward(self, *losses):
+        total = 0
+        for i, loss in enumerate(losses):
+            total = total + 0.5 * torch.exp(-self.log_vars[i]) * loss + 0.5 * self.log_vars[i]
+        return total
+
+    def get_weights(self):
+        with torch.no_grad():
+            return [0.5 * torch.exp(-lv).item() for lv in self.log_vars]
+
+
+def train_epoch(model, train_loader, optimizer, lr_scheduler, step,
+                contrastive_loss_fn, cls_loss_fn, loss_weighter, scaler):
     loss_meter = AvgMeter()
     tqdm_object = tqdm(train_loader, total=len(train_loader))
 
@@ -43,7 +63,8 @@ def train_epoch(model, train_loader, optimizer, lr_scheduler, step, contrastive_
             label = batch["label"].to(CFG.device)
             loss_cls = cls_loss_fn(cls_logits, label)
 
-            loss = loss_contrastive + CFG.cls_loss_weight * loss_cls
+            # Adaptive weighting
+            loss = loss_weighter(loss_contrastive, loss_cls)
 
         scaler.scale(loss).backward()
         scaler.step(optimizer)
@@ -52,18 +73,22 @@ def train_epoch(model, train_loader, optimizer, lr_scheduler, step, contrastive_
         if step == "batch":
             lr_scheduler.step()
 
+        w_con, w_cls = loss_weighter.get_weights()
         loss_meter.update(loss.item(), len(caption))
         tqdm_object.set_postfix(
-            train_loss=loss_meter.avg,
+            loss=loss_meter.avg,
             L_con=f"{loss_contrastive.item():.3f}",
             L_cls=f"{loss_cls.item():.3f}",
+            w_con=f"{w_con:.4f}",
+            w_cls=f"{w_cls:.2f}",
             lr=get_lr(optimizer),
         )
 
     return loss_meter
 
 
-def valid_epoch(model, valid_loader, test_loader, contrastive_loss_fn, cls_loss_fn, labels, label_tokens):
+def valid_epoch(model, valid_loader, test_loader,
+                contrastive_loss_fn, cls_loss_fn, loss_weighter, labels, label_tokens):
     loss_meter = AvgMeter()
 
     # --- Validation loss ---
@@ -87,7 +112,7 @@ def valid_epoch(model, valid_loader, test_loader, contrastive_loss_fn, cls_loss_
 
             label = batch["label"].to(CFG.device)
             loss_cls = cls_loss_fn(cls_logits, label)
-            loss = loss_contrastive + CFG.cls_loss_weight * loss_cls
+            loss = loss_weighter(loss_contrastive, loss_cls)
 
             loss_meter.update(loss.item(), batch["clip"].size(0))
             tqdm_object.set_postfix(valid_loss=loss_meter.avg)
@@ -142,11 +167,7 @@ def main():
     parser.add_argument("--train_csv", type=str, default="clip.csv", help="Training CSV filename")
     parser.add_argument("--save_suffix", type=str, default=None, help="Model save suffix")
     parser.add_argument("--log_dir", type=str, default=None, help="TensorBoard log directory")
-    parser.add_argument("--cls_weight", type=float, default=1.0, help="Classification loss weight")
     args = parser.parse_args()
-
-    if args.cls_weight != 1.0:
-        CFG.cls_loss_weight = args.cls_weight
 
     dataset_name = args.dataset.rstrip("/")
     save_suffix = args.save_suffix or dataset_name
@@ -167,6 +188,8 @@ def main():
     test_loader = get_dataloader(dataset_name, mode="testing", label_names=labels)
 
     model = VideoCLIPModel(num_classes=num_classes).to(CFG.device)
+    loss_weighter = AdaptiveLossWeighter(num_tasks=2).to(CFG.device)
+
     params = [
         {"params": model.image_encoder.parameters(), "lr": CFG.image_encoder_lr},
         {"params": model.text_encoder.parameters(), "lr": CFG.text_encoder_lr},
@@ -175,6 +198,7 @@ def main():
             model.text_projection.parameters(),
             model.classifier.parameters(),
         ), "lr": CFG.head_lr, "weight_decay": CFG.weight_decay},
+        {"params": loss_weighter.parameters(), "lr": CFG.head_lr},
     ]
     optimizer = torch.optim.AdamW(params, weight_decay=0.)
     lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -186,15 +210,22 @@ def main():
     for epoch in range(CFG.epochs):
         print(f"Epoch: {epoch + 1}")
         model.train()
+        loss_weighter.train()
         train_loss = train_epoch(model, train_loader, optimizer, lr_scheduler, "epoch",
-                                 contrastive_loss_fn, cls_loss_fn, scaler)
+                                 contrastive_loss_fn, cls_loss_fn, loss_weighter, scaler)
         writer.add_scalar("train_loss", train_loss.avg, epoch)
 
+        w_con, w_cls = loss_weighter.get_weights()
+        writer.add_scalar("weight/contrastive", w_con, epoch)
+        writer.add_scalar("weight/classifier", w_cls, epoch)
+        print(f"Adaptive weights: w_con={w_con:.4f}, w_cls={w_cls:.2f}")
+
         model.eval()
+        loss_weighter.eval()
         with torch.no_grad():
             valid_loss, acc_zs, acc_cls = valid_epoch(
                 model, valid_loader, test_loader,
-                contrastive_loss_fn, cls_loss_fn, labels, label_tokens,
+                contrastive_loss_fn, cls_loss_fn, loss_weighter, labels, label_tokens,
             )
             writer.add_scalar("valid_loss", valid_loss.avg, epoch)
             writer.add_scalar("acc@1_zeroshot", acc_zs, epoch)

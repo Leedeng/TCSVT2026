@@ -14,13 +14,12 @@ conda activate SPL2023
 
 DATASET=${1:-iMiGUE}
 TRAIN_CSV=${2:-clip.csv}
-CLS_WEIGHT=${3:-1.0}
 
 echo "=========================================="
 echo "End-to-End Training - ${DATASET}"
-echo "cls_weight: ${CLS_WEIGHT}"
+echo "Adaptive loss weighting (Kendall et al.)"
 echo "=========================================="
-python train.py --dataset "$DATASET" --train_csv "$TRAIN_CSV" --cls_weight "$CLS_WEIGHT"
+python train.py --dataset "$DATASET" --train_csv "$TRAIN_CSV"
 
 echo "=========================================="
 echo "Done! ${DATASET}"
