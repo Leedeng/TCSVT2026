@@ -44,7 +44,7 @@ def train_epoch(model, train_loader, optimizer, lr_scheduler, step,
         optimizer.zero_grad()
 
         with autocast("cuda"):
-            image_emb, text_emb, cls_logits = model(
+            image_emb, text_emb, cls_logits, _, _ = model(
                 clip=batch["clip"].to(CFG.device),
                 input_ids=batch["input_ids"].to(CFG.device),
                 attention_mask=batch["attention_mask"].to(CFG.device),
@@ -96,7 +96,7 @@ def valid_epoch(model, valid_loader, test_loader,
     with torch.no_grad():
         for batch in tqdm_object:
             caption = batch["caption"]
-            image_emb, text_emb, cls_logits = model(
+            image_emb, text_emb, cls_logits, _, _ = model(
                 clip=batch["clip"].to(CFG.device),
                 input_ids=batch["input_ids"].to(CFG.device),
                 attention_mask=batch["attention_mask"].to(CFG.device),
@@ -125,7 +125,7 @@ def valid_epoch(model, valid_loader, test_loader,
 
     # Encode all label texts once for zero-shot
     with torch.no_grad():
-        label_text_emb = model.encode_text(
+        label_text_emb, _ = model.encode_text(
             input_ids=label_tokens["input_ids"].to(CFG.device),
             attention_mask=label_tokens["attention_mask"].to(CFG.device),
         )
@@ -133,7 +133,7 @@ def valid_epoch(model, valid_loader, test_loader,
     with torch.no_grad():
         for batch in tqdm_object:
             caption = batch["caption"]
-            image_emb, _, cls_logits = model(
+            image_emb, _, cls_logits, _, _ = model(
                 clip=batch["clip"].to(CFG.device),
                 input_ids=batch["input_ids"].to(CFG.device),
                 attention_mask=batch["attention_mask"].to(CFG.device),
@@ -167,11 +167,13 @@ def main():
     parser.add_argument("--train_csv", type=str, default="clip.csv", help="Training CSV filename")
     parser.add_argument("--save_suffix", type=str, default=None, help="Model save suffix")
     parser.add_argument("--log_dir", type=str, default=None, help="TensorBoard log directory")
+    parser.add_argument("--use_tga", action="store_true", help="Enable Text-Guided Attention")
     args = parser.parse_args()
 
     dataset_name = args.dataset.rstrip("/")
-    save_suffix = args.save_suffix or dataset_name
-    log_dir = args.log_dir or f"./log/{dataset_name}_e2e"
+    tga_tag = "_tga" if args.use_tga else ""
+    save_suffix = args.save_suffix or f"{dataset_name}{tga_tag}"
+    log_dir = args.log_dir or f"./log/{dataset_name}_e2e{tga_tag}"
     writer = SummaryWriter(log_dir)
 
     # Load label names and prepare label tokens
@@ -187,17 +189,28 @@ def main():
     valid_loader = get_dataloader(dataset_name, mode="validation", label_names=labels)
     test_loader = get_dataloader(dataset_name, mode="testing", label_names=labels)
 
-    model = VideoCLIPModel(num_classes=num_classes).to(CFG.device)
+    model = VideoCLIPModel(num_classes=num_classes, use_tga=args.use_tga).to(CFG.device)
     loss_weighter = AdaptiveLossWeighter(num_tasks=2).to(CFG.device)
+
+    print(f"TGA: {'enabled' if args.use_tga else 'disabled'}")
+
+    # Build param groups
+    head_params = [
+        model.image_projection.parameters(),
+        model.text_projection.parameters(),
+        model.classifier.parameters(),
+    ]
+    if args.use_tga:
+        head_params.extend([
+            model.visual_token_proj.parameters(),
+            model.text_token_proj.parameters(),
+            model.tga.parameters(),
+        ])
 
     params = [
         {"params": model.image_encoder.parameters(), "lr": CFG.image_encoder_lr},
         {"params": model.text_encoder.parameters(), "lr": CFG.text_encoder_lr},
-        {"params": itertools.chain(
-            model.image_projection.parameters(),
-            model.text_projection.parameters(),
-            model.classifier.parameters(),
-        ), "lr": CFG.head_lr, "weight_decay": CFG.weight_decay},
+        {"params": itertools.chain(*head_params), "lr": CFG.head_lr, "weight_decay": CFG.weight_decay},
         {"params": loss_weighter.parameters(), "lr": CFG.head_lr},
     ]
     optimizer = torch.optim.AdamW(params, weight_decay=0.)

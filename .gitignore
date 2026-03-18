@@ -9,4 +9,6 @@ training_clips/
 testing_clips/
 training_videos/
 testing_videos/
+experiment/
+CLAUDE.md
 .DS_Store
