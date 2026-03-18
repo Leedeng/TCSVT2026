@@ -24,7 +24,7 @@ def predict_video_class(video_path, model, classifier, labels):
     clip = torch.tensor(clip, dtype=torch.float32).permute(0, 3, 1, 2).unsqueeze(0).to(CFG.device)
 
     with torch.no_grad():
-        image_embeddings = model.encode_image(clip)
+        image_embeddings, _ = model.encode_image(clip)
         logits = classifier(image_embeddings)
         probs = F.softmax(logits, dim=-1)
         pred_idx = torch.argmax(probs, dim=-1).item()

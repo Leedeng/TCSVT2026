@@ -116,6 +116,21 @@ class TGA(nn.Module):
         return v_hat, attn_weights
 
 
+class Classifier(nn.Module):
+    """Standalone classifier for finetuning stage."""
+    def __init__(self, embedding_dim, num_classes, dropout=CFG.dropout):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(embedding_dim, embedding_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(embedding_dim, num_classes),
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+
 class VideoCLIPModel(nn.Module):
     def __init__(self, num_classes=None, use_tga=False, temperature=CFG.temperature):
         super().__init__()

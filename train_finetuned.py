@@ -20,7 +20,7 @@ def train_epoch(model, classifier, train_loader, optimizer, lr_scheduler, step, 
     for batch in tqdm_object:
         optimizer.zero_grad()
         with autocast("cuda"):
-            image_embeddings = model.encode_image(batch["clip"].to(CFG.device))
+            image_embeddings, _ = model.encode_image(batch["clip"].to(CFG.device))
             logits = classifier(image_embeddings)
             target = batch["label"].to(CFG.device)
             loss = loss_fn(logits, target)
@@ -46,7 +46,7 @@ def valid_epoch(model, classifier, valid_loader, test_loader, loss_fn):
 
     with torch.no_grad():
         for batch in tqdm_object:
-            image_embeddings = model.encode_image(batch["clip"].to(CFG.device))
+            image_embeddings, _ = model.encode_image(batch["clip"].to(CFG.device))
             logits = classifier(image_embeddings).detach().cpu().numpy()
             target = batch["label"].detach().cpu().numpy()
 
@@ -63,7 +63,7 @@ def valid_epoch(model, classifier, valid_loader, test_loader, loss_fn):
 
     with torch.no_grad():
         for batch in tqdm_object:
-            image_embeddings = model.encode_image(batch["clip"].to(CFG.device))
+            image_embeddings, _ = model.encode_image(batch["clip"].to(CFG.device))
             logits = classifier(image_embeddings)
             target = batch["label"].to(CFG.device)
             loss = loss_fn(logits, target)
