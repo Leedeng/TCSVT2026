@@ -180,10 +180,10 @@ class VideoCLIPModel(nn.Module):
             tt = self.text_token_proj(text_tokens)        # [B, L, D]
             tga_features, attn_weights = self.tga(tt, vt) # [B, D], [B, L, N]
 
-        # Classification: use TGA features if available, else image embeddings
+        # Classification: always use image embeddings (not TGA features)
+        # TGA contributes via its own contrastive loss, not via the classifier
         cls_logits = None
         if self.classifier is not None:
-            cls_input = tga_features if tga_features is not None else image_embeddings
-            cls_logits = self.classifier(cls_input)
+            cls_logits = self.classifier(image_embeddings)
 
         return image_embeddings, text_embeddings, cls_logits, tga_features, attn_weights
