@@ -107,7 +107,7 @@ class TGA(nn.Module):
             query=text_tokens, key=visual_tokens, value=visual_tokens,
             need_weights=True,
         )
-        attn_out = self.norm1(attn_out + text_tokens)  # residual
+        attn_out = self.norm1(attn_out)  # no text residual — keep v_hat visual-only
         out = self.ffn(attn_out)
         out = self.norm2(out + attn_out)  # residual
 
