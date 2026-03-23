@@ -277,7 +277,9 @@ def main():
             writer.add_scalar("weight/contrastive", w_con, epoch)
             writer.add_scalar("weight/tga", w_tga, epoch)
             writer.add_scalar("weight/classifier", w_cls, epoch)
-            print(f"Adaptive weights: w_con={w_con:.4f}, w_tga={w_tga:.4f}, w_cls={w_cls:.2f}")
+            gate_val = torch.sigmoid(model.tga.res_gate).item()
+            writer.add_scalar("tga/res_gate", gate_val, epoch)
+            print(f"Adaptive weights: w_con={w_con:.4f}, w_tga={w_tga:.4f}, w_cls={w_cls:.2f}, tga_gate={gate_val:.4f}")
         else:
             w_con, w_cls = weights
             writer.add_scalar("weight/contrastive", w_con, epoch)

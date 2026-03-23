@@ -92,6 +92,8 @@ class TGA(nn.Module):
             nn.Dropout(dropout),
         )
         self.norm2 = nn.LayerNorm(embed_dim)
+        # Learnable gate for text residual: sigmoid(0)=0.5 at init
+        self.res_gate = nn.Parameter(torch.zeros(1))
 
     def forward(self, text_tokens, visual_tokens):
         """
@@ -107,9 +109,10 @@ class TGA(nn.Module):
             query=text_tokens, key=visual_tokens, value=visual_tokens,
             need_weights=True,
         )
-        attn_out = self.norm1(attn_out)  # no text residual — keep v_hat visual-only
+        gate = torch.sigmoid(self.res_gate)  # learnable residual strength
+        attn_out = self.norm1(attn_out + gate * text_tokens)
         out = self.ffn(attn_out)
-        out = self.norm2(out + attn_out)  # residual
+        out = self.norm2(out + attn_out)  # FFN residual
 
         # Mean pool over text token dimension to get single vector
         v_hat = out.mean(dim=1)  # [B, D]
