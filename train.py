@@ -45,7 +45,7 @@ def train_epoch(model, train_loader, optimizer, lr_scheduler, step,
         optimizer.zero_grad()
 
         with autocast("cuda"):
-            image_emb, text_emb, cls_logits, tga_features, _ = model(
+            image_emb, text_emb, cls_logits, tga_features, tga_text_anchor, _ = model(
                 clip=batch["clip"].to(CFG.device),
                 input_ids=batch["input_ids"].to(CFG.device),
                 attention_mask=batch["attention_mask"].to(CFG.device),
@@ -60,19 +60,11 @@ def train_epoch(model, train_loader, optimizer, lr_scheduler, step,
             )
             loss_con_global = (contrastive_loss_fn(text_logits, target) + contrastive_loss_fn(image_logits, target)) / 2
 
-            # Classification loss
+            # Classification loss (uses v_hat when TGA enabled)
             label = batch["label"].to(CFG.device)
             loss_cls = cls_loss_fn(cls_logits, label)
 
-            # TGA contrastive loss
-            if use_tga and tga_features is not None:
-                tga_text_logits = (tga_features @ text_emb.T) / CFG.temperature
-                tga_image_logits = (text_emb @ tga_features.T) / CFG.temperature
-                loss_con_tga = (contrastive_loss_fn(tga_text_logits, target) + contrastive_loss_fn(tga_image_logits, target)) / 2
-                loss = loss_weighter(loss_con_global, loss_con_tga, loss_cls)
-            else:
-                loss_con_tga = None
-                loss = loss_weighter(loss_con_global, loss_cls)
+            loss = loss_weighter(loss_con_global, loss_cls)
 
         scaler.scale(loss).backward()
         scaler.step(optimizer)
@@ -81,17 +73,13 @@ def train_epoch(model, train_loader, optimizer, lr_scheduler, step,
         if step == "batch":
             lr_scheduler.step()
 
-        weights = loss_weighter.get_weights()
         loss_meter.update(loss.item(), len(caption))
-        postfix = dict(
+        tqdm_object.set_postfix(
             loss=loss_meter.avg,
             L_con=f"{loss_con_global.item():.3f}",
             L_cls=f"{loss_cls.item():.3f}",
             lr=get_lr(optimizer),
         )
-        if loss_con_tga is not None:
-            postfix["L_tga"] = f"{loss_con_tga.item():.3f}"
-        tqdm_object.set_postfix(**postfix)
 
     return loss_meter
 
@@ -106,7 +94,7 @@ def valid_epoch(model, valid_loader, test_loader,
     with torch.no_grad():
         for batch in tqdm_object:
             caption = batch["caption"]
-            image_emb, text_emb, cls_logits, tga_features, _ = model(
+            image_emb, text_emb, cls_logits, tga_features, tga_text_anchor, _ = model(
                 clip=batch["clip"].to(CFG.device),
                 input_ids=batch["input_ids"].to(CFG.device),
                 attention_mask=batch["attention_mask"].to(CFG.device),
@@ -123,26 +111,20 @@ def valid_epoch(model, valid_loader, test_loader,
             label = batch["label"].to(CFG.device)
             loss_cls = cls_loss_fn(cls_logits, label)
 
-            if use_tga and tga_features is not None:
-                tga_text_logits = (tga_features @ text_emb.T) / CFG.temperature
-                tga_image_logits = (text_emb @ tga_features.T) / CFG.temperature
-                loss_con_tga = (contrastive_loss_fn(tga_text_logits, target) + contrastive_loss_fn(tga_image_logits, target)) / 2
-                loss = loss_weighter(loss_con_global, loss_con_tga, loss_cls)
-            else:
-                loss = loss_weighter(loss_con_global, loss_cls)
+            loss = loss_weighter(loss_con_global, loss_cls)
 
             loss_meter.update(loss.item(), batch["clip"].size(0))
             tqdm_object.set_postfix(valid_loss=loss_meter.avg)
 
     # --- Pre-encode all label texts ---
     with torch.no_grad():
-        label_text_emb, label_text_tokens = model.encode_text(
+        label_text_emb, label_text_tokens, label_text_pooled = model.encode_text(
             input_ids=label_tokens["input_ids"].to(CFG.device),
             attention_mask=label_tokens["attention_mask"].to(CFG.device),
         )
-        # Pre-compute projected tokens for TGA evaluation
         if use_tga:
-            label_text_proj = model.text_token_proj(label_text_tokens)  # [N_classes, L, D]
+            label_text_proj = model.text_token_proj(label_text_tokens)   # [N_classes, L, D]
+            label_tga_anchors = model.text_token_proj(label_text_pooled) # [N_classes, D]
 
     # --- Test accuracy ---
     acc_1_zs, acc_5_zs = 0, 0
@@ -156,10 +138,9 @@ def valid_epoch(model, valid_loader, test_loader,
         for batch in tqdm_object:
             caption = batch["caption"]
             clip_tensor = batch["clip"].to(CFG.device)
+            gt_idx = labels.index(caption[0])
 
-            # encode_image returns (image_embeddings [B,D], raw_tokens [B,N,512])
             image_emb, visual_tokens = model.encode_image(clip_tensor)
-            cls_logits = model.classifier(image_emb) if model.classifier is not None else None
 
             # --- Zero-shot accuracy (global contrastive) ---
             dot_similarity = image_emb @ label_text_emb.T
@@ -169,30 +150,46 @@ def valid_epoch(model, valid_loader, test_loader,
             for a in indices_pred[0]:
                 acc_5_zs += (labels[a] == caption[0])
 
-            # --- ZS+TGA accuracy ---
             if use_tga:
                 proj_visual = model.visual_token_proj(visual_tokens)  # [1, N, D]
+
                 tga_scores = []
+                cls_scores = []
                 for c in range(num_classes):
                     text_tok_c = label_text_proj[c:c+1]  # [1, L, D]
                     v_hat_c, _ = model.tga(text_tok_c, proj_visual)  # [1, D]
-                    score_c = F.cosine_similarity(v_hat_c, label_text_emb[c:c+1])
+
+                    # ZS+TGA: cosine similarity in TGA space
+                    score_c = F.cosine_similarity(v_hat_c, label_tga_anchors[c:c+1])
                     tga_scores.append(score_c.item())
+
+                    # Classifier on v_hat: take logit for class c
+                    logits_c = model.classifier(v_hat_c)  # [1, num_classes]
+                    cls_scores.append(logits_c[0, c].item())
+
+                # --- ZS+TGA accuracy ---
                 tga_scores = np.array(tga_scores)
                 top1_tga = np.argmax(tga_scores)
                 top5_tga = np.argpartition(tga_scores, len(tga_scores) - 5)[-5:]
-                gt_idx = labels.index(caption[0])
                 acc_1_tga += (gt_idx == top1_tga)
                 acc_5_tga += (gt_idx in top5_tga)
 
-            # --- Classifier accuracy ---
-            logits_np = cls_logits.detach().cpu().numpy()
-            target_np = batch["label"].detach().cpu().numpy()
-            top1 = np.argmax(logits_np[0])
-            top1_target = np.argmax(target_np[0])
-            top5 = np.argpartition(logits_np[0], len(logits_np[0]) - 5)[-5:]
-            acc_1_cls += (top1_target == top1)
-            acc_5_cls += (top1_target in top5)
+                # --- Classifier accuracy (on TGA features) ---
+                cls_scores = np.array(cls_scores)
+                top1_cls = np.argmax(cls_scores)
+                top5_cls = np.argpartition(cls_scores, len(cls_scores) - 5)[-5:]
+                acc_1_cls += (gt_idx == top1_cls)
+                acc_5_cls += (gt_idx in top5_cls)
+            else:
+                # --- Classifier accuracy (on image_emb) ---
+                cls_logits = model.classifier(image_emb)
+                logits_np = cls_logits.detach().cpu().numpy()
+                target_np = batch["label"].detach().cpu().numpy()
+                top1 = np.argmax(logits_np[0])
+                top1_target = np.argmax(target_np[0])
+                top5 = np.argpartition(logits_np[0], len(logits_np[0]) - 5)[-5:]
+                acc_1_cls += (top1_target == top1)
+                acc_5_cls += (top1_target in top5)
 
     print(f"Zero-shot  acc@1 == {acc_1_zs / total_number * 100:.2f}%  acc@5 == {acc_5_zs / total_number * 100:.2f}%")
     if use_tga:
@@ -231,8 +228,7 @@ def main():
     test_loader = get_dataloader(dataset_name, mode="testing", label_names=labels)
 
     model = VideoCLIPModel(num_classes=num_classes, use_tga=args.use_tga).to(CFG.device)
-    num_tasks = 3 if args.use_tga else 2
-    loss_weighter = AdaptiveLossWeighter(num_tasks=num_tasks).to(CFG.device)
+    loss_weighter = AdaptiveLossWeighter(num_tasks=2).to(CFG.device)
 
     print(f"TGA: {'enabled' if args.use_tga else 'disabled'}")
 
@@ -271,20 +267,10 @@ def main():
                                  use_tga=args.use_tga)
         writer.add_scalar("train_loss", train_loss.avg, epoch)
 
-        weights = loss_weighter.get_weights()
-        if args.use_tga:
-            w_con, w_tga, w_cls = weights
-            writer.add_scalar("weight/contrastive", w_con, epoch)
-            writer.add_scalar("weight/tga", w_tga, epoch)
-            writer.add_scalar("weight/classifier", w_cls, epoch)
-            gate_val = torch.sigmoid(model.tga.res_gate).item()
-            writer.add_scalar("tga/res_gate", gate_val, epoch)
-            print(f"Adaptive weights: w_con={w_con:.4f}, w_tga={w_tga:.4f}, w_cls={w_cls:.2f}, tga_gate={gate_val:.4f}")
-        else:
-            w_con, w_cls = weights
-            writer.add_scalar("weight/contrastive", w_con, epoch)
-            writer.add_scalar("weight/classifier", w_cls, epoch)
-            print(f"Adaptive weights: w_con={w_con:.4f}, w_cls={w_cls:.2f}")
+        w_con, w_cls = loss_weighter.get_weights()
+        writer.add_scalar("weight/contrastive", w_con, epoch)
+        writer.add_scalar("weight/classifier", w_cls, epoch)
+        print(f"Adaptive weights: w_con={w_con:.4f}, w_cls={w_cls:.2f}")
 
         model.eval()
         loss_weighter.eval()

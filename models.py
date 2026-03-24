@@ -76,7 +76,8 @@ class ProjectionHead(nn.Module):
 
 
 class TGA(nn.Module):
-    """Text-Guided Attention: text tokens attend to visual tokens via cross-attention."""
+    """Text-Guided Attention: text queries attend to visual key/values,
+    with visual (not text) residual to avoid information leakage."""
     def __init__(self, embed_dim=CFG.projection_dim, num_heads=4, dropout=CFG.dropout):
         super().__init__()
         self.cross_attn = nn.MultiheadAttention(
@@ -92,8 +93,6 @@ class TGA(nn.Module):
             nn.Dropout(dropout),
         )
         self.norm2 = nn.LayerNorm(embed_dim)
-        # Learnable gate for text residual: sigmoid(0)=0.5 at init
-        self.res_gate = nn.Parameter(torch.zeros(1))
 
     def forward(self, text_tokens, visual_tokens):
         """
@@ -105,12 +104,14 @@ class TGA(nn.Module):
             attn_weights: [B, L, N] — attention map
         """
         # Cross-attention: text queries attend to visual keys/values
+        # Output is weighted visual features (V=visual), no text content
         attn_out, attn_weights = self.cross_attn(
             query=text_tokens, key=visual_tokens, value=visual_tokens,
             need_weights=True,
         )
-        gate = torch.sigmoid(self.res_gate)  # learnable residual strength
-        attn_out = self.norm1(attn_out + gate * text_tokens)
+        # Visual residual: broadcast pooled visual [B,1,D] to [B,L,D]
+        visual_pooled = visual_tokens.mean(dim=1, keepdim=True)  # [B, 1, D]
+        attn_out = self.norm1(attn_out + visual_pooled)
         out = self.ffn(attn_out)
         out = self.norm2(out + attn_out)  # FFN residual
 
@@ -169,24 +170,29 @@ class VideoCLIPModel(nn.Module):
     def encode_text(self, input_ids, attention_mask):
         tokens, pooled = self.text_encoder(input_ids=input_ids, attention_mask=attention_mask)
         text_embeddings = self.text_projection(pooled)
-        return text_embeddings, tokens
+        return text_embeddings, tokens, pooled
 
     def forward(self, clip, input_ids, attention_mask):
         image_embeddings, visual_tokens = self.encode_image(clip)
-        text_embeddings, text_tokens = self.encode_text(input_ids, attention_mask)
+        text_embeddings, text_tokens, text_pooled = self.encode_text(input_ids, attention_mask)
 
         tga_features = None
+        tga_text_anchor = None
         attn_weights = None
         if self.use_tga:
-            # Project tokens to shared space for TGA
+            # Project tokens to shared TGA space
             vt = self.visual_token_proj(visual_tokens)   # [B, N, D]
             tt = self.text_token_proj(text_tokens)        # [B, L, D]
             tga_features, attn_weights = self.tga(tt, vt) # [B, D], [B, L, N]
+            # Text anchor in TGA space for contrastive loss
+            tga_text_anchor = self.text_token_proj(text_pooled)  # [B, D]
 
-        # Classification: always use image embeddings (not TGA features)
-        # TGA contributes via its own contrastive loss, not via the classifier
+        # Classification: use TGA features when available, else image embeddings
         cls_logits = None
         if self.classifier is not None:
-            cls_logits = self.classifier(image_embeddings)
+            if self.use_tga and tga_features is not None:
+                cls_logits = self.classifier(tga_features)
+            else:
+                cls_logits = self.classifier(image_embeddings)
 
-        return image_embeddings, text_embeddings, cls_logits, tga_features, attn_weights
+        return image_embeddings, text_embeddings, cls_logits, tga_features, tga_text_anchor, attn_weights
