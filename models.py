@@ -115,6 +115,8 @@ class VideoCLIPModel(nn.Module):
             self.visual_token_proj = nn.Linear(CFG.image_embedding, CFG.projection_dim)
             self.text_token_proj = nn.Linear(CFG.text_embedding, CFG.projection_dim)
             self.tga = TGA(embed_dim=CFG.projection_dim)
+            # Learnable gate: sigmoid(-3) ≈ 0.05 at init, so v_hat starts near-zero
+            self.tga_gate = nn.Parameter(torch.tensor(-3.0))
 
         # Classification head
         if num_classes is not None:
@@ -154,7 +156,8 @@ class VideoCLIPModel(nn.Module):
         cls_logits = None
         if self.classifier is not None:
             if self.use_tga and tga_features is not None:
-                cls_logits = self.classifier(image_embeddings + tga_features)
+                gate = torch.sigmoid(self.tga_gate)
+                cls_logits = self.classifier(image_embeddings + gate * tga_features)
             else:
                 cls_logits = self.classifier(image_embeddings)
 

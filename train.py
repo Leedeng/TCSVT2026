@@ -167,7 +167,8 @@ def valid_epoch(model, valid_loader, test_loader,
                     tga_scores.append(score_c.item())
 
                     # Classifier on fused features: image_emb + v_hat
-                    logits_c = model.classifier(image_emb + v_hat_c)  # [1, num_classes]
+                    gate = torch.sigmoid(model.tga_gate)
+                    logits_c = model.classifier(image_emb + gate * v_hat_c)  # [1, num_classes]
                     cls_scores.append(logits_c[0, c].item())
 
                 # --- ZS+TGA accuracy ---
@@ -273,7 +274,12 @@ def main():
         w_con, w_cls = loss_weighter.get_weights()
         writer.add_scalar("weight/contrastive", w_con, epoch)
         writer.add_scalar("weight/classifier", w_cls, epoch)
-        print(f"Adaptive weights: w_con={w_con:.4f}, w_cls={w_cls:.2f}")
+        if args.use_tga:
+            gate_val = torch.sigmoid(model.tga_gate).item()
+            writer.add_scalar("tga/gate", gate_val, epoch)
+            print(f"Adaptive weights: w_con={w_con:.4f}, w_cls={w_cls:.2f}, tga_gate={gate_val:.4f}")
+        else:
+            print(f"Adaptive weights: w_con={w_con:.4f}, w_cls={w_cls:.2f}")
 
         model.eval()
         loss_weighter.eval()
