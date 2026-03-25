@@ -51,9 +51,11 @@ def train_epoch(model, train_loader, optimizer, lr_scheduler, step,
                 attention_mask=batch["attention_mask"].to(CFG.device),
             )
 
-            # Global contrastive loss
-            text_logits = (text_emb @ image_emb.T) / CFG.temperature
-            image_logits = (image_emb @ text_emb.T) / CFG.temperature
+            # Global contrastive loss (L2 normalize before dot product)
+            image_emb_n = F.normalize(image_emb, dim=-1)
+            text_emb_n = F.normalize(text_emb, dim=-1)
+            text_logits = (text_emb_n @ image_emb_n.T) / CFG.temperature
+            image_logits = (image_emb_n @ text_emb_n.T) / CFG.temperature
             target = torch.tensor(
                 [[1.0 if caption[i] == c else 0.0 for c in caption] for i in range(len(caption))],
                 dtype=image_emb.dtype, device=CFG.device,
@@ -100,8 +102,10 @@ def valid_epoch(model, valid_loader, test_loader,
                 attention_mask=batch["attention_mask"].to(CFG.device),
             )
 
-            text_logits = (text_emb @ image_emb.T) / CFG.temperature
-            image_logits = (image_emb @ text_emb.T) / CFG.temperature
+            image_emb_n = F.normalize(image_emb, dim=-1)
+            text_emb_n = F.normalize(text_emb, dim=-1)
+            text_logits = (text_emb_n @ image_emb_n.T) / CFG.temperature
+            image_logits = (image_emb_n @ text_emb_n.T) / CFG.temperature
             target = torch.tensor(
                 [[1.0 if caption[i] == c else 0.0 for c in caption] for i in range(len(caption))],
                 dtype=image_emb.dtype, device=CFG.device,
@@ -143,7 +147,7 @@ def valid_epoch(model, valid_loader, test_loader,
             image_emb, visual_tokens = model.encode_image(clip_tensor)
 
             # --- Zero-shot accuracy (global contrastive) ---
-            dot_similarity = image_emb @ label_text_emb.T
+            dot_similarity = F.normalize(image_emb, dim=-1) @ F.normalize(label_text_emb, dim=-1).T
             _, indices_pred = torch.topk(dot_similarity, 5, dim=-1)
             indices_pred = indices_pred.detach().cpu().numpy()
             acc_1_zs += (labels[indices_pred[0][0]] == caption[0])
