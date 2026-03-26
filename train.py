@@ -167,11 +167,13 @@ def main():
     parser.add_argument("--train_csv", type=str, default="clip.csv", help="Training CSV filename")
     parser.add_argument("--save_suffix", type=str, default=None, help="Model save suffix")
     parser.add_argument("--log_dir", type=str, default=None, help="TensorBoard log directory")
+    parser.add_argument("--use_descriptions", action="store_true", help="Use GPT-generated descriptions instead of short labels")
     args = parser.parse_args()
 
     dataset_name = args.dataset.rstrip("/")
-    save_suffix = args.save_suffix or dataset_name
-    log_dir = args.log_dir or f"./log/{dataset_name}_e2e"
+    desc_tag = "_desc" if args.use_descriptions else ""
+    save_suffix = args.save_suffix or f"{dataset_name}{desc_tag}"
+    log_dir = args.log_dir or f"./log/{dataset_name}_e2e{desc_tag}"
     writer = SummaryWriter(log_dir)
 
     # Load label names and prepare label tokens
@@ -183,7 +185,8 @@ def main():
 
     contrastive_loss_fn = KLLoss()
     cls_loss_fn = torch.nn.CrossEntropyLoss()
-    train_loader = get_dataloader(dataset_name, mode="training", train_csv=args.train_csv, label_names=labels)
+    train_loader = get_dataloader(dataset_name, mode="training", train_csv=args.train_csv,
+                                  label_names=labels, use_descriptions=args.use_descriptions)
     valid_loader = get_dataloader(dataset_name, mode="validation", label_names=labels)
     test_loader = get_dataloader(dataset_name, mode="testing", label_names=labels)
 
