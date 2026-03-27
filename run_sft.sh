@@ -17,7 +17,8 @@ DATASET=${1:-iMiGUE}
 echo "=========================================="
 echo "SFT Training - ${DATASET}"
 echo "=========================================="
-python sft_train.py --dataset "$DATASET" --epochs 10 --batch_size 16 --lr 2e-5
+EPOCHS=${3:-30}
+python sft_train.py --dataset "$DATASET" --epochs "$EPOCHS" --batch_size 16 --lr 2e-5
 
 echo "=========================================="
 echo "Done! ${DATASET}"
