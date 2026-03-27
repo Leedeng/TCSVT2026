@@ -25,7 +25,7 @@ python grpo_train.py \
     --dataset "$DATASET" \
     --reward_model_path "$REWARD_MODEL" \
     --sft_model_path "$SFT_MODEL" \
-    --epochs 5 \
+    --epochs 20 \
     --lr 1e-6 \
     --G 8 \
     --temperature 0.8

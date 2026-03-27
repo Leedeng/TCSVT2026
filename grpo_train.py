@@ -1,5 +1,9 @@
 """GRPO: Group Relative Policy Optimization for micro-gesture description generation.
 
+Per-class optimization: generate descriptions per class (not per sample),
+evaluate against all samples of that class, average advantages.
+~430x faster than per-sample.
+
 Uses verifiable rewards (no reward model) to optimize LLM description quality:
   R1 (alignment): cosine_sim(image_emb, text_emb) in frozen contrastive space
   R2 (discrimination): margin between correct class and nearest wrong class
@@ -7,7 +11,7 @@ Uses verifiable rewards (no reward model) to optimize LLM description quality:
 """
 import argparse
 import json
-import os
+import random
 
 import numpy as np
 import pandas as pd
@@ -39,7 +43,6 @@ def compute_R2(text_emb, image_emb_correct, mean_image_embs, correct_idx):
     """Discrimination reward: margin between correct class and nearest wrong class."""
     sims = F.cosine_similarity(text_emb, mean_image_embs, dim=-1)  # [num_classes]
     correct_sim = sims[correct_idx].item()
-    # Mask correct class, find max of wrong classes
     sims[correct_idx] = -1.0
     max_wrong_sim = sims.max().item()
     return correct_sim - max_wrong_sim
@@ -49,16 +52,11 @@ def compute_R3(description, tokenizer, min_len=10, max_len=80):
     """Quality reward: rule-based checks on generation quality."""
     tokens = tokenizer.encode(description)
     score = 1.0
-
-    # Length check
     if len(tokens) < min_len or len(tokens) > max_len:
         score -= 0.5
-
-    # Repetition check
     words = description.lower().split()
     if len(words) > 0 and len(set(words)) / len(words) < 0.5:
         score -= 0.5
-
     return max(score, 0.0)
 
 
@@ -78,7 +76,7 @@ def compute_reward(text_emb, image_emb, mean_image_embs, correct_idx,
 
 def pre_encode_videos(reward_model, dataloader, device):
     """Pre-encode all training videos with frozen visual encoder.
-    Returns: image_embs [N, D], labels [N] (class indices)."""
+    Returns: image_embs [N, D], labels [N] (class indices), label_names [N]."""
     reward_model.eval()
     all_embs = []
     all_labels = []
@@ -90,8 +88,6 @@ def pre_encode_videos(reward_model, dataloader, device):
             image_emb = reward_model.encode_image(clip)
             image_emb = F.normalize(image_emb, dim=-1)
             all_embs.append(image_emb.cpu())
-
-            # Get class index from one-hot label
             label_idx = batch["label"].argmax(dim=-1)
             all_labels.append(label_idx)
             all_label_names.extend(batch["caption"])
@@ -114,7 +110,7 @@ def compute_mean_class_embs(image_embs, label_indices, num_classes):
 
 
 # ============================================================
-# GRPO Core
+# Log prob computation
 # ============================================================
 
 def compute_log_probs(model, tokenizer, prompt, description, device):
@@ -128,52 +124,38 @@ def compute_log_probs(model, tokenizer, prompt, description, device):
 
     with autocast("cuda"):
         outputs = model(**full_enc)
-        logits = outputs.logits  # [1, seq_len, vocab]
+        logits = outputs.logits
 
-    # Shift: predict next token
-    shift_logits = logits[:, prompt_len-1:-1, :]  # [1, desc_len, vocab]
-    shift_labels = full_enc["input_ids"][:, prompt_len:]  # [1, desc_len]
+    shift_logits = logits[:, prompt_len-1:-1, :]
+    shift_labels = full_enc["input_ids"][:, prompt_len:]
 
     log_probs = torch.log_softmax(shift_logits.float(), dim=-1)
-    token_log_probs = log_probs.gather(2, shift_labels.unsqueeze(-1)).squeeze(-1)  # [1, desc_len]
+    token_log_probs = log_probs.gather(2, shift_labels.unsqueeze(-1)).squeeze(-1)
 
-    return token_log_probs.sum()  # scalar: total log prob of description
+    return token_log_probs.sum()
 
 
-def grpo_step(llm, ref_lora_state, tokenizer, reward_model, text_encoder_tokenizer,
-              image_emb, label_name, correct_idx, mean_image_embs,
-              device, G=8, temperature=0.8, max_new_tokens=80,
-              epsilon=0.2, beta_kl=0.04):
-    """One GRPO step for a single sample.
+# ============================================================
+# Per-class GRPO step
+# ============================================================
 
-    Uses frozen SFT LoRA weights as reference policy (not base model).
+def grpo_class_step(llm, ref_lora_state, tokenizer, reward_model, text_encoder_tokenizer,
+                    class_image_embs, label_name, correct_idx, mean_image_embs,
+                    device, G=8, temperature=0.8, max_new_tokens=80,
+                    epsilon=0.2, beta_kl=0.04):
+    """One GRPO step for an entire class.
+
+    Generates G descriptions once, evaluates against all samples of the class,
+    averages advantages, then computes loss.
 
     Args:
-        llm: current policy (trainable LoRA)
-        ref_lora_state: frozen SFT LoRA weights dict for reference policy
-        tokenizer: LLM tokenizer
-        reward_model: frozen VideoCLIPModel for encoding text
-        text_encoder_tokenizer: CFG.tokenizer for encoding descriptions
-        image_emb: [1, D] pre-cached image embedding
-        label_name: class label string
-        correct_idx: class index
-        mean_image_embs: [num_classes, D] mean embeddings per class
-        device: cuda device
-        G: group size
-        temperature: sampling temperature
-        max_new_tokens: max generation length
-        epsilon: clip range
-        beta_kl: KL penalty coefficient
-
-    Returns:
-        loss: scalar GRPO loss
-        mean_reward: average reward across group
-        rewards_dict: dict with r1, r2, r3 averages
+        class_image_embs: [M, D] pre-cached image embeddings for this class
+        Other args same as before.
     """
     prompt = PROMPT_TEMPLATE.format(label_name)
     prompt_ids = tokenizer(prompt, return_tensors="pt").to(device)
 
-    # 1. Sample G descriptions
+    # 1. Sample G descriptions (once per class)
     llm.eval()
     with torch.no_grad():
         outputs = llm.generate(
@@ -190,14 +172,12 @@ def grpo_step(llm, ref_lora_state, tokenizer, reward_model, text_encoder_tokeniz
         desc = tokenizer.decode(outputs[i][prompt_ids["input_ids"].shape[1]:], skip_special_tokens=True).strip()
         descriptions.append(desc)
 
-    # 2. Compute rewards
-    rewards = []
-    r1s, r2s, r3s = [], [], []
+    # 2. Encode descriptions through reward model (once per class)
     text_embs = []
+    r3_scores = []
     reward_model.eval()
     with torch.no_grad():
         for desc in descriptions:
-            # Encode description through reward model's text encoder
             desc_tokens = text_encoder_tokenizer(
                 desc, return_tensors="pt", padding=True, truncation=True, max_length=CFG.max_length
             ).to(device)
@@ -207,25 +187,36 @@ def grpo_step(llm, ref_lora_state, tokenizer, reward_model, text_encoder_tokeniz
             )
             text_emb = F.normalize(text_emb, dim=-1)
             text_embs.append(text_emb)
+            r3_scores.append(compute_R3(desc, tokenizer))
 
-            r, r1, r2, r3 = compute_reward(
-                text_emb, image_emb.to(device), mean_image_embs.to(device),
-                correct_idx, desc, tokenizer,
-            )
-            rewards.append(r)
-            r1s.append(r1)
-            r2s.append(r2)
-            r3s.append(r3)
+    # 3. Compute rewards for all samples × all descriptions
+    M = class_image_embs.shape[0]  # number of samples in this class
+    all_rewards = torch.zeros(M, G)  # [M, G]
+    all_r1s = torch.zeros(M, G)
 
-    rewards = torch.tensor(rewards, device=device)
+    mean_embs_device = mean_image_embs.to(device)
+    for g in range(G):
+        for m in range(M):
+            img_emb = class_image_embs[m:m+1].to(device)
+            r1 = F.cosine_similarity(text_embs[g], img_emb, dim=-1).item()
+            r2 = compute_R2(text_embs[g], img_emb, mean_embs_device, correct_idx)
+            total = 1.0 * r1 + 0.5 * r2 + 0.2 * r3_scores[g]
+            all_rewards[m, g] = total
+            all_r1s[m, g] = r1
 
-    # 3. Group normalize → advantages
-    if rewards.std() > 1e-8:
-        advantages = (rewards - rewards.mean()) / rewards.std()
-    else:
-        advantages = torch.zeros_like(rewards)
+    # 4. Per-sample advantage, then average across samples
+    # For each sample: normalize rewards across G descriptions
+    advantages = torch.zeros(G)
+    for m in range(M):
+        sample_rewards = all_rewards[m]
+        if sample_rewards.std() > 1e-8:
+            sample_adv = (sample_rewards - sample_rewards.mean()) / sample_rewards.std()
+        else:
+            sample_adv = torch.zeros(G)
+        advantages += sample_adv
+    advantages = advantages / M  # average advantage per description
 
-    # 4. Compute log probs and GRPO loss (with SFT reference via weight swap)
+    # 5. Compute log probs and GRPO loss
     llm.train()
     total_loss = torch.tensor(0.0, device=device, requires_grad=True)
     valid_count = 0
@@ -237,7 +228,7 @@ def grpo_step(llm, ref_lora_state, tokenizer, reward_model, text_encoder_tokeniz
         # Current policy log prob
         log_prob_theta = compute_log_probs(llm, tokenizer, prompt, descriptions[g], device)
 
-        # Reference log prob: swap in frozen SFT weights, compute, swap back
+        # Reference log prob: swap in frozen SFT weights
         current_lora = {}
         for name, param in llm.named_parameters():
             if name in ref_lora_state:
@@ -253,22 +244,26 @@ def grpo_step(llm, ref_lora_state, tokenizer, reward_model, text_encoder_tokeniz
 
         # Clipped surrogate objective
         ratio = torch.exp(log_prob_theta - log_prob_ref.detach())
-        A = advantages[g].detach()
+        A = advantages[g].detach().to(device)
         surr1 = ratio * A
         surr2 = torch.clamp(ratio, 1 - epsilon, 1 + epsilon) * A
         policy_loss = -torch.min(surr1, surr2)
 
         # KL penalty
         kl = log_prob_theta - log_prob_ref.detach()
-
         total_loss = total_loss + policy_loss + beta_kl * kl
         valid_count += 1
 
     total_loss = total_loss / max(valid_count, 1)
 
-    return total_loss, rewards.mean().item(), {
-        "r1": np.mean(r1s), "r2": np.mean(r2s), "r3": np.mean(r3s),
-    }, descriptions[rewards.argmax().item()]
+    mean_reward = all_rewards.mean().item()
+    mean_r1 = all_r1s.mean().item()
+    mean_r2 = (mean_reward - 1.0 * mean_r1 - 0.2 * np.mean(r3_scores)) / 0.5  # back-compute
+    best_desc = descriptions[advantages.argmax().item()]
+
+    return total_loss, mean_reward, {
+        "r1": mean_r1, "r2": mean_r2, "r3": np.mean(r3_scores),
+    }, best_desc
 
 
 # ============================================================
@@ -281,7 +276,7 @@ def main():
     parser.add_argument("--reward_model_path", type=str, required=True, help="Frozen baseline model .pt")
     parser.add_argument("--sft_model_path", type=str, required=True, help="SFT LoRA adapter directory")
     parser.add_argument("--llm_base", type=str, default="Qwen/Qwen2.5-0.5B")
-    parser.add_argument("--epochs", type=int, default=5)
+    parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--lr", type=float, default=1e-6)
     parser.add_argument("--G", type=int, default=8, help="Group size")
     parser.add_argument("--temperature", type=float, default=0.8)
@@ -313,9 +308,23 @@ def main():
     # Pre-encode all training videos
     print("Pre-encoding training videos...")
     train_loader = get_dataloader(dataset_name, mode="training", label_names=labels)
-    image_embs, label_indices, label_names = pre_encode_videos(reward_model, train_loader, device)
+    image_embs, label_indices, label_names_list = pre_encode_videos(reward_model, train_loader, device)
     mean_image_embs = compute_mean_class_embs(image_embs, label_indices, num_classes)
     print(f"Cached {len(image_embs)} image embeddings, {num_classes} classes")
+
+    # Group image embeddings by class
+    class_embs = {}
+    for i in range(len(image_embs)):
+        c = label_indices[i].item()
+        if c not in class_embs:
+            class_embs[c] = []
+        class_embs[c].append(image_embs[i])
+    for c in class_embs:
+        class_embs[c] = torch.stack(class_embs[c])
+    print(f"Samples per class: {', '.join(f'{labels[c]}:{len(v)}' for c, v in sorted(class_embs.items())[:5])}...")
+
+    # Free reward model's visual encoder from GPU (only need text encoder for reward)
+    # Keep reward_model on device for encode_text
 
     # Load SFT-trained LLM with LoRA
     print("Loading SFT LLM...")
@@ -335,7 +344,7 @@ def main():
     for name, param in llm.named_parameters():
         if param.requires_grad:
             ref_lora_state[name] = param.data.clone()
-    print(f"Saved {len(ref_lora_state)} reference LoRA parameters ({sum(p.numel() for p in ref_lora_state.values())} params)")
+    print(f"Saved {len(ref_lora_state)} reference LoRA parameters")
 
     # Optimizer
     optimizer = torch.optim.AdamW(
@@ -343,31 +352,25 @@ def main():
         lr=args.lr, weight_decay=0.01,
     )
 
-    # Text encoder tokenizer (for encoding generated descriptions through reward model)
     text_encoder_tokenizer = CFG.tokenizer
 
-    print(f"\nGRPO Training: {args.epochs} epochs, G={args.G}, lr={args.lr}")
-    print(f"Samples: {len(image_embs)}, Classes: {num_classes}\n")
+    print(f"\nGRPO Training (per-class): {args.epochs} epochs, G={args.G}, lr={args.lr}")
+    print(f"Classes: {num_classes}, ~{len(image_embs)//num_classes} samples/class\n")
 
     global_step = 0
     best_reward = -float("inf")
 
     for epoch in range(args.epochs):
-        # Shuffle sample order
-        perm = torch.randperm(len(image_embs))
+        class_order = list(range(num_classes))
+        random.shuffle(class_order)
         epoch_rewards = []
         epoch_r1s, epoch_r2s, epoch_r3s = [], [], []
 
-        pbar = tqdm(range(len(perm)), desc=f"Epoch {epoch+1}/{args.epochs}")
-        for i in pbar:
-            idx = perm[i].item()
-            image_emb = image_embs[idx:idx+1]  # [1, D]
-            label_name = label_names[idx]
-            correct_idx = labels.index(label_name)
-
-            loss, mean_reward, reward_dict, best_desc = grpo_step(
+        pbar = tqdm(class_order, desc=f"Epoch {epoch+1}/{args.epochs}")
+        for c in pbar:
+            loss, mean_reward, reward_dict, best_desc = grpo_class_step(
                 llm, ref_lora_state, llm_tokenizer, reward_model, text_encoder_tokenizer,
-                image_emb, label_name, correct_idx, mean_image_embs,
+                class_embs[c], labels[c], c, mean_image_embs,
                 device, G=args.G, temperature=args.temperature,
                 epsilon=args.epsilon, beta_kl=args.beta_kl,
             )
@@ -385,29 +388,26 @@ def main():
             pbar.set_postfix(
                 R=f"{mean_reward:.3f}",
                 R1=f"{reward_dict['r1']:.3f}",
-                R2=f"{reward_dict['r2']:.3f}",
                 loss=f"{loss.item():.4f}",
             )
 
             global_step += 1
-            if global_step % 50 == 0:
-                writer.add_scalar("reward/total", mean_reward, global_step)
-                writer.add_scalar("reward/R1_align", reward_dict["r1"], global_step)
-                writer.add_scalar("reward/R2_discrim", reward_dict["r2"], global_step)
-                writer.add_scalar("reward/R3_quality", reward_dict["r3"], global_step)
-                writer.add_scalar("loss", loss.item(), global_step)
+            writer.add_scalar("reward/total", mean_reward, global_step)
+            writer.add_scalar("reward/R1_align", reward_dict["r1"], global_step)
+            writer.add_scalar("reward/R2_discrim", reward_dict["r2"], global_step)
+            writer.add_scalar("loss", loss.item(), global_step)
 
         # Epoch summary
         avg_reward = np.mean(epoch_rewards)
         print(f"Epoch {epoch+1}: avg_reward={avg_reward:.4f}, "
               f"R1={np.mean(epoch_r1s):.4f}, R2={np.mean(epoch_r2s):.4f}, R3={np.mean(epoch_r3s):.4f}")
 
-        # Generate sample descriptions
-        print("Sample descriptions (best in group):")
+        # Generate sample descriptions (greedy)
+        print("Sample descriptions:")
+        llm.eval()
         for label in labels[:3]:
             prompt = PROMPT_TEMPLATE.format(label)
             inputs = llm_tokenizer(prompt, return_tensors="pt").to(device)
-            llm.eval()
             with torch.no_grad():
                 out = llm.generate(
                     **inputs, max_new_tokens=80, do_sample=False,
