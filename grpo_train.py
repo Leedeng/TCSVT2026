@@ -140,15 +140,17 @@ def compute_log_probs(model, tokenizer, prompt, description, device):
     return token_log_probs.sum()  # scalar: total log prob of description
 
 
-def grpo_step(llm, llm_ref_forward, tokenizer, reward_model, text_encoder_tokenizer,
+def grpo_step(llm, ref_lora_state, tokenizer, reward_model, text_encoder_tokenizer,
               image_emb, label_name, correct_idx, mean_image_embs,
               device, G=8, temperature=0.8, max_new_tokens=80,
               epsilon=0.2, beta_kl=0.04):
     """One GRPO step for a single sample.
 
+    Uses frozen SFT LoRA weights as reference policy (not base model).
+
     Args:
         llm: current policy (trainable LoRA)
-        llm_ref_forward: function to compute log_probs with reference policy
+        ref_lora_state: frozen SFT LoRA weights dict for reference policy
         tokenizer: LLM tokenizer
         reward_model: frozen VideoCLIPModel for encoding text
         text_encoder_tokenizer: CFG.tokenizer for encoding descriptions
@@ -223,26 +225,34 @@ def grpo_step(llm, llm_ref_forward, tokenizer, reward_model, text_encoder_tokeni
     else:
         advantages = torch.zeros_like(rewards)
 
-    # 4. Compute log probs and GRPO loss
+    # 4. Compute log probs and GRPO loss (with SFT reference via weight swap)
     llm.train()
     total_loss = torch.tensor(0.0, device=device, requires_grad=True)
+    valid_count = 0
 
     for g in range(G):
         if len(descriptions[g].strip()) == 0:
             continue
 
+        # Current policy log prob
         log_prob_theta = compute_log_probs(llm, tokenizer, prompt, descriptions[g], device)
 
-        # Reference log prob (disable LoRA)
-        llm.disable_adapter_layers()
+        # Reference log prob: swap in frozen SFT weights, compute, swap back
+        current_lora = {}
+        for name, param in llm.named_parameters():
+            if name in ref_lora_state:
+                current_lora[name] = param.data.clone()
+                param.data.copy_(ref_lora_state[name])
+
         with torch.no_grad():
             log_prob_ref = compute_log_probs(llm, tokenizer, prompt, descriptions[g], device)
-        llm.enable_adapter_layers()
 
-        # Policy ratio
+        for name, param in llm.named_parameters():
+            if name in current_lora:
+                param.data.copy_(current_lora[name])
+
+        # Clipped surrogate objective
         ratio = torch.exp(log_prob_theta - log_prob_ref.detach())
-
-        # Clipped surrogate
         A = advantages[g].detach()
         surr1 = ratio * A
         surr2 = torch.clamp(ratio, 1 - epsilon, 1 + epsilon) * A
@@ -252,8 +262,9 @@ def grpo_step(llm, llm_ref_forward, tokenizer, reward_model, text_encoder_tokeni
         kl = log_prob_theta - log_prob_ref.detach()
 
         total_loss = total_loss + policy_loss + beta_kl * kl
+        valid_count += 1
 
-    total_loss = total_loss / max(G, 1)
+    total_loss = total_loss / max(valid_count, 1)
 
     return total_loss, rewards.mean().item(), {
         "r1": np.mean(r1s), "r2": np.mean(r2s), "r3": np.mean(r3s),
@@ -319,6 +330,13 @@ def main():
     llm = llm.to(device)
     llm.print_trainable_parameters()
 
+    # Save SFT LoRA weights as frozen reference policy
+    ref_lora_state = {}
+    for name, param in llm.named_parameters():
+        if param.requires_grad:
+            ref_lora_state[name] = param.data.clone()
+    print(f"Saved {len(ref_lora_state)} reference LoRA parameters ({sum(p.numel() for p in ref_lora_state.values())} params)")
+
     # Optimizer
     optimizer = torch.optim.AdamW(
         [p for p in llm.parameters() if p.requires_grad],
@@ -348,7 +366,7 @@ def main():
             correct_idx = labels.index(label_name)
 
             loss, mean_reward, reward_dict, best_desc = grpo_step(
-                llm, None, llm_tokenizer, reward_model, text_encoder_tokenizer,
+                llm, ref_lora_state, llm_tokenizer, reward_model, text_encoder_tokenizer,
                 image_emb, label_name, correct_idx, mean_image_embs,
                 device, G=args.G, temperature=args.temperature,
                 epsilon=args.epsilon, beta_kl=args.beta_kl,
