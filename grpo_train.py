@@ -34,18 +34,19 @@ PROMPT_TEMPLATE = "Describe the micro gesture called '{}' in one sentence:"
 # Reward Functions
 # ============================================================
 
-def compute_R1(text_emb, image_emb):
-    """Alignment reward: cosine similarity between generated text and video."""
-    return F.cosine_similarity(text_emb, image_emb, dim=-1).item()
-
-
-def compute_R2(text_emb, image_emb_correct, mean_image_embs, correct_idx):
-    """Discrimination reward: margin between correct class and nearest wrong class."""
+def compute_R1(text_emb, mean_image_embs, correct_idx):
+    """Ranking-based reward: 1/(rank+1) of correct class among all classes.
+    Rank 0 (top-1) → 1.0, rank 1 → 0.5, rank 4 → 0.2, etc.
+    Much sharper signal than raw cosine similarity."""
     sims = F.cosine_similarity(text_emb, mean_image_embs, dim=-1)  # [num_classes]
-    correct_sim = sims[correct_idx].item()
-    sims[correct_idx] = -1.0
-    max_wrong_sim = sims.max().item()
-    return correct_sim - max_wrong_sim
+    correct_sim = sims[correct_idx]
+    rank = (sims > correct_sim).sum().item()
+    return 1.0 / (rank + 1)
+
+
+def compute_R2(text_emb, image_emb, mean_image_embs, correct_idx):
+    """Per-sample cosine similarity (continuous fine-grained signal)."""
+    return F.cosine_similarity(text_emb, image_emb, dim=-1).item()
 
 
 def compute_R3(description, tokenizer, min_len=10, max_len=80):
@@ -61,9 +62,9 @@ def compute_R3(description, tokenizer, min_len=10, max_len=80):
 
 
 def compute_reward(text_emb, image_emb, mean_image_embs, correct_idx,
-                   description, tokenizer, alpha=1.0, beta=0.5, gamma=0.2):
-    """Total verifiable reward."""
-    r1 = compute_R1(text_emb, image_emb)
+                   description, tokenizer, alpha=1.0, beta=0.3, gamma=0.2):
+    """Total verifiable reward. R1 (ranking) dominates."""
+    r1 = compute_R1(text_emb, mean_image_embs, correct_idx)
     r2 = compute_R2(text_emb, image_emb, mean_image_embs, correct_idx)
     r3 = compute_R3(description, tokenizer)
     total = alpha * r1 + beta * r2 + gamma * r3
@@ -196,11 +197,12 @@ def grpo_class_step(llm, ref_lora_state, tokenizer, reward_model, text_encoder_t
 
     mean_embs_device = mean_image_embs.to(device)
     for g in range(G):
+        # R1 (ranking): same for all samples of this class (uses mean_image_embs)
+        r1 = compute_R1(text_embs[g], mean_embs_device, correct_idx)
         for m in range(M):
             img_emb = class_image_embs[m:m+1].to(device)
-            r1 = F.cosine_similarity(text_embs[g], img_emb, dim=-1).item()
             r2 = compute_R2(text_embs[g], img_emb, mean_embs_device, correct_idx)
-            total = 1.0 * r1 + 0.5 * r2 + 0.2 * r3_scores[g]
+            total = 1.0 * r1 + 0.3 * r2 + 0.2 * r3_scores[g]
             all_rewards[m, g] = total
             all_r1s[m, g] = r1
 
