@@ -80,7 +80,7 @@ class VideoTextDataset(Dataset):
 
 
 def get_dataloader(dataset_name, mode, train_csv="clip.csv", label_names=None,
-                   use_descriptions=False):
+                   use_descriptions=False, desc_file=None):
     if mode == "training":
         file_dir = f"{dataset_name}/training_clips/"
         clip_df = pd.read_csv(file_dir + train_csv)
@@ -91,7 +91,7 @@ def get_dataloader(dataset_name, mode, train_csv="clip.csv", label_names=None,
     # Load descriptions for training if requested
     descriptions = None
     if use_descriptions and mode == "training":
-        desc_path = f"descriptions/{dataset_name}_descriptions.json"
+        desc_path = desc_file or f"descriptions/{dataset_name}_descriptions.json"
         with open(desc_path) as f:
             descriptions = json.load(f)
         print(f"Loaded {sum(len(v) for v in descriptions.values())} descriptions for {len(descriptions)} classes")
