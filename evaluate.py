@@ -58,12 +58,16 @@ def main():
     all_targets = np.array(all_targets)
 
     acc_1 = (all_preds == all_targets).mean() * 100
-    f1_mean = f1_score(all_targets, all_preds, average="macro") * 100
+    f1_macro = f1_score(all_targets, all_preds, average="macro") * 100
+    f1_micro = f1_score(all_targets, all_preds, average="micro") * 100
+    f1_weighted = f1_score(all_targets, all_preds, average="weighted") * 100
 
     print(f"\nDataset: {dataset_name}")
     print(f"Checkpoint: {args.checkpoint}")
-    print(f"acc@1 = {acc_1:.2f}%")
-    print(f"F1_mean = {f1_mean:.2f}%")
+    print(f"acc@1      = {acc_1:.2f}%")
+    print(f"F1_macro   = {f1_macro:.2f}%")
+    print(f"F1_micro   = {f1_micro:.2f}%")
+    print(f"F1_weighted = {f1_weighted:.2f}%")
 
     # Per-class F1
     f1_per_class = f1_score(all_targets, all_preds, average=None) * 100
