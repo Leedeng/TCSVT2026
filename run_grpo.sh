@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=TCSVT_grpo
-#SBATCH --account=project_2014500
+#SBATCH --account=project_2010362
 #SBATCH --partition=gpusmall
 #SBATCH --time=24:00:00
 #SBATCH --nodes=1
