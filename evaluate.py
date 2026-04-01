@@ -58,11 +58,8 @@ def main():
     acc_1 = (all_preds == all_targets).mean() * 100
     top5 = np.argsort(all_logits, axis=-1)[:, -5:]
     acc_5 = np.mean([all_targets[i] in top5[i] for i in range(len(all_targets))]) * 100
-    f1_macro = f1_score(all_targets, all_preds, average="macro") * 100
-    f1_micro = f1_score(all_targets, all_preds, average="micro") * 100
-    f1_weighted = f1_score(all_targets, all_preds, average="weighted") * 100
 
-    print(f"{args.checkpoint}\tacc@1={acc_1:.2f}%\tacc@5={acc_5:.2f}%\tF1_macro={f1_macro:.2f}%\tF1_micro={f1_micro:.2f}%\tF1_weighted={f1_weighted:.2f}%")
+    print(f"{args.checkpoint}\tacc@1={acc_1:.2f}%\tacc@5={acc_5:.2f}%")
 
 
 if __name__ == "__main__":
