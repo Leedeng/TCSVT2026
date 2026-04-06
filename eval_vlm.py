@@ -60,7 +60,7 @@ def main():
         args.model_name, torch_dtype=torch.float16, device_map="auto",
     )
     processor = AutoProcessor.from_pretrained(args.model_name)
-    print("Model loaded.")
+    print("Model loaded.", flush=True)
 
     # Load test data
     test_dir = f"{dataset_name}/testing_clips/"
@@ -121,10 +121,10 @@ def main():
             if gt_label.strip().lower() in response_lower:
                 correct_5 += 1
 
-        if (idx + 1) % 50 == 0 or idx == total - 1:
+        if (idx + 1) % 10 == 0 or idx == 0 or idx == total - 1:
             print(f"[{idx+1}/{total}] acc@1={correct_1/(idx+1)*100:.2f}% "
                   f"avg_time={np.mean(times):.2f}s "
-                  f"pred='{response[:60]}' gt='{gt_label}'")
+                  f"pred='{response[:60]}' gt='{gt_label}'", flush=True)
 
     acc_1 = correct_1 / total * 100
     acc_5 = correct_5 / total * 100
