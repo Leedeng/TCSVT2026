@@ -285,6 +285,7 @@ def main():
     parser.add_argument("--epsilon", type=float, default=0.2)
     parser.add_argument("--beta_kl", type=float, default=0.04)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--save_suffix", type=str, default=None, help="Suffix for save directory")
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -421,7 +422,8 @@ def main():
         # Save best
         if avg_reward > best_reward:
             best_reward = avg_reward
-            save_path = f"grpo_{dataset_name}_{args.llm_base.split('/')[-1]}"
+            suffix = args.save_suffix or args.llm_base.split('/')[-1]
+            save_path = f"grpo_{dataset_name}_{suffix}"
             llm.save_pretrained(save_path)
             llm_tokenizer.save_pretrained(save_path)
             print(f"Saved best model (avg_reward={avg_reward:.4f})")
