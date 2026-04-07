@@ -143,7 +143,8 @@ def compute_log_probs(model, tokenizer, prompt, description, device):
 def grpo_class_step(llm, ref_lora_state, tokenizer, reward_model, text_encoder_tokenizer,
                     class_image_embs, label_name, correct_idx, mean_image_embs,
                     device, G=8, temperature=0.8, max_new_tokens=80,
-                    epsilon=0.2, beta_kl=0.04):
+                    epsilon=0.2, beta_kl=0.04,
+                    alpha=1.0, beta_r=0.3, gamma=0.2):
     """One GRPO step for an entire class.
 
     Generates G descriptions once, evaluates against all samples of the class,
@@ -202,7 +203,7 @@ def grpo_class_step(llm, ref_lora_state, tokenizer, reward_model, text_encoder_t
         for m in range(M):
             img_emb = class_image_embs[m:m+1].to(device)
             r2 = compute_R2(text_embs[g], img_emb, mean_embs_device, correct_idx)
-            total = 1.0 * r1 + 0.3 * r2 + 0.2 * r3_scores[g]
+            total = alpha * r1 + beta_r * r2 + gamma * r3_scores[g]
             all_rewards[m, g] = total
             all_r1s[m, g] = r1
 
@@ -286,6 +287,9 @@ def main():
     parser.add_argument("--beta_kl", type=float, default=0.04)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--save_suffix", type=str, default=None, help="Suffix for save directory")
+    parser.add_argument("--alpha", type=float, default=1.0, help="R1 weight")
+    parser.add_argument("--beta_r", type=float, default=0.3, help="R2 weight")
+    parser.add_argument("--gamma", type=float, default=0.2, help="R3 weight")
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -376,6 +380,7 @@ def main():
                 class_embs[c], labels[c], c, mean_image_embs,
                 device, G=args.G, temperature=args.temperature,
                 epsilon=args.epsilon, beta_kl=args.beta_kl,
+                alpha=args.alpha, beta_r=args.beta_r, gamma=args.gamma,
             )
 
             optimizer.zero_grad()
