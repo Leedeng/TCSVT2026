@@ -5,6 +5,7 @@ Usage:
 """
 import argparse
 import os
+import time
 os.environ["TQDM_DISABLE"] = "1"
 
 import numpy as np
@@ -39,14 +40,26 @@ def main():
     all_preds = []
     all_targets = []
     all_logits = []
+    times = []
+
+    # Warmup
+    with torch.no_grad():
+        for batch in test_loader:
+            model(clip=batch["clip"].to(device), input_ids=batch["input_ids"].to(device),
+                  attention_mask=batch["attention_mask"].to(device))
+            break
 
     with torch.no_grad():
         for batch in test_loader:
+            torch.cuda.synchronize()
+            t0 = time.time()
             image_emb, _, cls_logits = model(
                 clip=batch["clip"].to(device),
                 input_ids=batch["input_ids"].to(device),
                 attention_mask=batch["attention_mask"].to(device),
             )
+            torch.cuda.synchronize()
+            times.append(time.time() - t0)
             all_logits.append(cls_logits.cpu().numpy())
             all_preds.extend(cls_logits.argmax(dim=-1).cpu().numpy())
             all_targets.extend(batch["label"].argmax(dim=-1).cpu().numpy())
@@ -59,7 +72,8 @@ def main():
     top5 = np.argsort(all_logits, axis=-1)[:, -5:]
     acc_5 = np.mean([all_targets[i] in top5[i] for i in range(len(all_targets))]) * 100
 
-    print(f"{args.checkpoint}\tacc@1={acc_1:.2f}%\tacc@5={acc_5:.2f}%")
+    avg_time = np.mean(times) * 1000  # ms
+    print(f"{args.checkpoint}\tacc@1={acc_1:.2f}%\tacc@5={acc_5:.2f}%\tavg_time={avg_time:.1f}ms")
 
 
 if __name__ == "__main__":
