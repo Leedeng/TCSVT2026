@@ -290,6 +290,7 @@ def main():
     parser.add_argument("--alpha", type=float, default=1.0, help="R1 weight")
     parser.add_argument("--beta_r", type=float, default=0.3, help="R2 weight")
     parser.add_argument("--gamma", type=float, default=0.2, help="R3 weight")
+    parser.add_argument("--ckpt_dir", type=str, default=".", help="Directory to save checkpoints")
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -428,7 +429,7 @@ def main():
         if avg_reward > best_reward:
             best_reward = avg_reward
             suffix = args.save_suffix or args.llm_base.split('/')[-1]
-            save_path = f"grpo_{dataset_name}_{suffix}"
+            save_path = f"{args.ckpt_dir}/grpo_{dataset_name}_{suffix}"
             llm.save_pretrained(save_path)
             llm_tokenizer.save_pretrained(save_path)
             print(f"Saved best model (avg_reward={avg_reward:.4f})")

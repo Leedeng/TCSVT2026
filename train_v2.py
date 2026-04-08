@@ -175,6 +175,7 @@ def main():
     parser.add_argument("--use_descriptions", action="store_true", help="Use GPT-generated descriptions instead of short labels")
     parser.add_argument("--desc_file", type=str, default=None, help="Path to description JSON file (default: descriptions/{dataset}_descriptions.json)")
     parser.add_argument("--epochs", type=int, default=None, help="Override CFG.epochs")
+    parser.add_argument("--ckpt_dir", type=str, default=".", help="Directory to save checkpoints")
     args = parser.parse_args()
 
     dataset_name = args.dataset.rstrip("/")
@@ -247,7 +248,8 @@ def main():
         acc = max(acc_zs, acc_cls)
         if acc > best_acc:
             best_acc = acc
-            torch.save(model.state_dict(), f"{round(best_acc, 2)}_{save_suffix}.pt")
+            ckpt_path = f"{args.ckpt_dir}/{round(best_acc, 2)}_{save_suffix}.pt"
+            torch.save(model.state_dict(), ckpt_path)
             print("Saved Best Model!")
 
         lr_scheduler.step(valid_loss.avg)
