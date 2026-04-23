@@ -80,14 +80,13 @@ def main():
     log_dir = args.log_dir or f"log/{dataset}_video_only"
     os.makedirs(ckpt_dir, exist_ok=True)
 
-    train_loader = get_dataloader(
-        data_dir=f"{dataset}/training_clips/", mode="training",
-        batch_size=args.batch_size, num_workers=CFG.num_workers,
-    )
-    test_loader = get_dataloader(
-        data_dir=f"{dataset}/testing_clips/", mode="testing",
-        batch_size=args.batch_size, num_workers=CFG.num_workers,
-    )
+    # get_dataloader reads {dataset}/training_clips/clip.csv and
+    # {dataset}/testing_clips/clip.csv internally. Pick up class names
+    # from Clip_label.csv so train/test labels align.
+    import pandas as pd
+    labels = list(pd.read_csv(f"{dataset}/Clip_label.csv")["name"].values)
+    train_loader = get_dataloader(dataset, mode="training", label_names=labels)
+    test_loader = get_dataloader(dataset, mode="testing", label_names=labels)
 
     # Infer num_classes from a peek at the first batch
     peek = next(iter(train_loader))
