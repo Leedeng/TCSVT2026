@@ -22,6 +22,5 @@ cd /scratch/project_2014500/dengli/TCSVT2026
 
 python eval_vlm_gemma.py \
     --dataset iMiGUE \
-    --model_path /scratch/project_2014500/dengli/gemma-4-E4B \
-    --num_frames 8 \
-    --max_new_tokens 50
+    --model_path /scratch/project_2014500/dengli/gemma-4-E4B-it \
+    --max_new_tokens 64
