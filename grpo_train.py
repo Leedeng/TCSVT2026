@@ -261,7 +261,11 @@ def grpo_class_step(llm, ref_lora_state, tokenizer, reward_model, text_encoder_t
 
     mean_reward = all_rewards.mean().item()
     mean_r1 = all_r1s.mean().item()
-    mean_r2 = (mean_reward - 1.0 * mean_r1 - 0.2 * np.mean(r3_scores)) / 0.5  # back-compute
+    # Back-compute mean R2 from total = alpha*R1 + beta*R2 + gamma*R3.
+    # Use the actual reward weights so the logged R2 matches what the
+    # advantage was based on. Previously this hardcoded /0.5 which gave
+    # an incorrect (sometimes negative) R2 in tensorboard.
+    mean_r2 = (mean_reward - alpha * mean_r1 - gamma * np.mean(r3_scores)) / max(beta_r, 1e-8)
     best_desc = descriptions[advantages.argmax().item()]
 
     return total_loss, mean_reward, {
