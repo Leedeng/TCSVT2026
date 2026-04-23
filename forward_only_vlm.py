@@ -141,7 +141,11 @@ def main():
     model.eval()
     for p in model.parameters():
         p.requires_grad = False
-    hidden_dim = model.config.hidden_size
+    # Qwen2.5-VL exposes hidden_size under text_config; plain LMs at top level.
+    if hasattr(model.config, "text_config") and hasattr(model.config.text_config, "hidden_size"):
+        hidden_dim = model.config.text_config.hidden_size
+    else:
+        hidden_dim = model.config.hidden_size
     print(f"hidden_dim={hidden_dim}", flush=True)
 
     # Feature extraction (with caching)
