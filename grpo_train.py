@@ -195,6 +195,7 @@ def grpo_class_step(llm, ref_lora_state, tokenizer, reward_model, text_encoder_t
     M = class_image_embs.shape[0]  # number of samples in this class
     all_rewards = torch.zeros(M, G)  # [M, G]
     all_r1s = torch.zeros(M, G)
+    all_r2s = torch.zeros(M, G)
 
     mean_embs_device = mean_image_embs.to(device)
     for g in range(G):
@@ -206,6 +207,7 @@ def grpo_class_step(llm, ref_lora_state, tokenizer, reward_model, text_encoder_t
             total = alpha * r1 + beta_r * r2 + gamma * r3_scores[g]
             all_rewards[m, g] = total
             all_r1s[m, g] = r1
+            all_r2s[m, g] = r2
 
     # 4. Per-sample advantage, then average across samples
     # For each sample: normalize rewards across G descriptions
@@ -261,11 +263,7 @@ def grpo_class_step(llm, ref_lora_state, tokenizer, reward_model, text_encoder_t
 
     mean_reward = all_rewards.mean().item()
     mean_r1 = all_r1s.mean().item()
-    # Back-compute mean R2 from total = alpha*R1 + beta*R2 + gamma*R3.
-    # Use the actual reward weights so the logged R2 matches what the
-    # advantage was based on. Previously this hardcoded /0.5 which gave
-    # an incorrect (sometimes negative) R2 in tensorboard.
-    mean_r2 = (mean_reward - alpha * mean_r1 - gamma * np.mean(r3_scores)) / max(beta_r, 1e-8)
+    mean_r2 = all_r2s.mean().item()
     best_desc = descriptions[advantages.argmax().item()]
 
     return total_loss, mean_reward, {
@@ -408,6 +406,7 @@ def main():
             writer.add_scalar("reward/total", mean_reward, global_step)
             writer.add_scalar("reward/R1_align", reward_dict["r1"], global_step)
             writer.add_scalar("reward/R2_discrim", reward_dict["r2"], global_step)
+            writer.add_scalar("reward/R3_quality", reward_dict["r3"], global_step)
             writer.add_scalar("loss", loss.item(), global_step)
 
         # Epoch summary
