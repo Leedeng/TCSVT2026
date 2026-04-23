@@ -49,6 +49,8 @@ def main():
         help="Comma-separated LoRA target module suffixes",
     )
     parser.add_argument("--max_new_tokens", type=int, default=64)
+    parser.add_argument("--num_frames", type=int, default=16,
+                        help="Frames per video for Gemma's video processor (Gemma default is 32)")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--save_dir", type=str, default="vlm_ft_gemma_iMiGUE")
     args = parser.parse_args()
@@ -67,6 +69,11 @@ def main():
 
     print(f"Loading {args.model_path} ...", flush=True)
     processor = AutoProcessor.from_pretrained(args.model_path)
+    # iMiGUE clips are short (~30 frames at 30 FPS); reduce frame count
+    # so the video processor doesn't fail on the shortest clips and to
+    # cut sequence length for faster training.
+    if hasattr(processor, "video_processor") and processor.video_processor is not None:
+        processor.video_processor.num_frames = args.num_frames
     model = AutoModelForMultimodalLM.from_pretrained(
         args.model_path,
         dtype="auto",
