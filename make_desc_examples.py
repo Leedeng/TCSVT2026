@@ -8,6 +8,7 @@ Usage:
       --out_dir experiment/desc_examples
 """
 import argparse
+import gc
 import json
 import os
 
@@ -20,13 +21,19 @@ from matplotlib.gridspec import GridSpec
 
 def sample_frames(video_path, n=9):
     vr = VideoReader(video_path, ctx=cpu(0))
-    total = len(vr)
-    if total <= n:
-        idx = list(range(total)) + [total - 1] * (n - total)
-    else:
-        idx = np.linspace(0, total - 1, n, dtype=int).tolist()
-    frames = vr.get_batch(idx).asnumpy()
-    return frames
+    try:
+        total = len(vr)
+        if total <= n:
+            idx = list(range(total)) + [total - 1] * (n - total)
+        else:
+            idx = np.linspace(0, total - 1, n, dtype=int).tolist()
+        frames = vr.get_batch(idx).asnumpy().copy()
+        return frames
+    finally:
+        # Decord's VideoReader holds a C++ handle; explicit del + gc keeps
+        # resident memory bounded when processing hundreds of clips in a loop.
+        del vr
+        gc.collect()
 
 
 def render(frames, class_name, orig, grpo, out_path, n_frames=9):
@@ -120,6 +127,8 @@ def main():
                 cls_dir, os.path.splitext(row["clip"])[0].replace("/", "_") + ".png"
             )
             render(frames, cls, orig_text, grpo_text, out_png, args.n_frames)
+            del frames
+        gc.collect()
 
         print(f"  [{cls}] rendered {n} videos -> {cls_dir}", flush=True)
 

@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --account=project_2014500
 #SBATCH --partition=small
-#SBATCH --time=01:00:00
+#SBATCH --time=03:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
@@ -16,9 +16,12 @@ conda activate SPL2023
 
 cd /scratch/project_2014500/dengli/TCSVT2026
 
-python make_desc_examples.py \
-    --dataset iMiGUE \
-    --k_per_class 10 \
-    --n_frames 9 \
-    --videos_from training_clips \
-    --out_dir experiment/desc_examples
+for DS in iMiGUE SMG MA52; do
+    echo "=== ${DS} ==="
+    python make_desc_examples.py \
+        --dataset "$DS" \
+        --k_per_class 10 \
+        --n_frames 9 \
+        --videos_from training_clips \
+        --out_dir experiment/desc_examples
+done
