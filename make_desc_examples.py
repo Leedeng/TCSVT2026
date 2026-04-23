@@ -87,8 +87,12 @@ def main():
     ds = args.dataset.rstrip("/")
     orig_path = args.orig_json or f"descriptions/{ds}_descriptions.json"
     grpo_path = args.grpo_json or f"descriptions/{ds}_grpo_descriptions.json"
-    orig_desc = json.load(open(orig_path))
-    grpo_desc = json.load(open(grpo_path))
+    orig_desc_raw = json.load(open(orig_path))
+    grpo_desc_raw = json.load(open(grpo_path))
+    # Some iMiGUE keys have trailing whitespace (e.g. 'Rubbing eyes ') while
+    # clip.csv captions are stripped. Normalise by stripping keys on both sides.
+    orig_desc = {k.strip(): v for k, v in orig_desc_raw.items()}
+    grpo_desc = {k.strip(): v for k, v in grpo_desc_raw.items()}
 
     clip_dir = f"{ds}/{args.videos_from}/"
     df = pd.read_csv(clip_dir + "clip.csv")
@@ -107,8 +111,8 @@ def main():
         n = min(args.k_per_class, len(sub))
         picks = rng.choice(len(sub), size=n, replace=False)
 
-        orig_list = orig_desc.get(cls, [])
-        grpo_list = grpo_desc.get(cls, [])
+        orig_list = orig_desc.get(cls.strip(), [])
+        grpo_list = grpo_desc.get(cls.strip(), [])
         orig_text = orig_list[0] if orig_list else "(no original description)"
         grpo_text = grpo_list[0] if grpo_list else "(no grpo description)"
 
