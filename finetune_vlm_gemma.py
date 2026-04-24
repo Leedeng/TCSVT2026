@@ -53,6 +53,10 @@ def main():
                         help="Frames per video for Gemma's video processor (Gemma default is 32)")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--save_dir", type=str, default="vlm_ft_gemma_iMiGUE")
+    parser.add_argument("--max_train_steps", type=int, default=0,
+                        help="If >0, stop training after N steps (smoke test)")
+    parser.add_argument("--skip_eval", action="store_true",
+                        help="Skip per-epoch evaluation (smoke test)")
     args = parser.parse_args()
 
     random.seed(args.seed)
@@ -175,6 +179,18 @@ def main():
 
             total_loss += loss.item()
             count += 1
+            if (i + 1) % 10 == 0 or i == 0:
+                mem_gb = torch.cuda.max_memory_allocated() / 1e9 if torch.cuda.is_available() else 0
+                ep_elapsed = time.time() - ep_t0
+                print(
+                    f"ep {epoch+1} [{i+1}/{len(order)}] "
+                    f"loss={total_loss/max(count,1):.4f} "
+                    f"peak_mem={mem_gb:.1f}GB elapsed={ep_elapsed/60:.2f}m",
+                    flush=True,
+                )
+            if args.max_train_steps > 0 and count >= args.max_train_steps:
+                print(f"Reached max_train_steps={args.max_train_steps}, stopping.", flush=True)
+                break
             if (i + 1) % 50 == 0:
                 ep_elapsed = time.time() - ep_t0
                 eta = ep_elapsed / (i + 1) * (len(order) - i - 1)
@@ -191,6 +207,9 @@ def main():
             flush=True,
         )
 
+        if args.skip_eval:
+            print("skip_eval set, ending epoch without evaluation", flush=True)
+            continue
         # Evaluation
         model.eval()
         correct = 0
