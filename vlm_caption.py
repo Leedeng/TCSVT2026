@@ -22,8 +22,8 @@ from PIL import Image
 from decord import VideoReader, cpu
 
 
-PROMPT = (
-    "This video shows a person performing a micro-gesture. "
+PROMPT_TEMPLATE = (
+    "This video shows the micro-gesture \"{cls}\". "
     "Describe what the person is doing in ONE concise sentence focused on "
     "the body part(s) and the motion."
 )
@@ -44,11 +44,11 @@ def sample_frames(video_path, num_frames=8):
         gc.collect()
 
 
-def caption_qwen(model, processor, video_path, num_frames, device, max_new=80):
+def caption_qwen(model, processor, video_path, num_frames, device, prompt, max_new=80):
     from qwen_vl_utils import process_vision_info
     frames = sample_frames(video_path, num_frames)
     content = [{"type": "image", "image": f} for f in frames]
-    content.append({"type": "text", "text": PROMPT})
+    content.append({"type": "text", "text": prompt})
     messages = [{"role": "user", "content": content}]
     text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     image_inputs, video_inputs = process_vision_info(messages)
@@ -62,12 +62,12 @@ def caption_qwen(model, processor, video_path, num_frames, device, max_new=80):
     return processor.decode(gen, skip_special_tokens=True).strip()
 
 
-def caption_gemma(model, processor, video_path, num_frames, device, max_new=80):
+def caption_gemma(model, processor, video_path, num_frames, device, prompt, max_new=80):
     messages = [{
         "role": "user",
         "content": [
             {"type": "video", "video": os.path.abspath(video_path)},
-            {"type": "text", "text": PROMPT},
+            {"type": "text", "text": prompt},
         ],
     }]
     inputs = processor.apply_chat_template(
@@ -152,9 +152,10 @@ def main():
         if clip_rel in captions:
             continue
         video_path = clip_dir + clip_rel
+        prompt = PROMPT_TEMPLATE.format(cls=cls.strip())
         try:
             cap = cap_fn(model, processor, video_path, args.num_frames, device,
-                        max_new=args.max_new_tokens)
+                        prompt, max_new=args.max_new_tokens)
         except Exception as e:
             cap = f"(generation failed: {e})"
             print(f"  [{i+1}/{len(picks)}] FAIL {clip_rel}: {e}", flush=True)
