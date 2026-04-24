@@ -16,6 +16,7 @@ Usage:
 """
 import argparse
 import random
+import re
 import time
 
 import numpy as np
@@ -90,7 +91,15 @@ def main():
     if hasattr(model, "enable_input_require_grads"):
         model.enable_input_require_grads()
 
-    target_modules = [m.strip() for m in args.target_modules.split(",") if m.strip()]
+    suffixes = [m.strip() for m in args.target_modules.split(",") if m.strip()]
+    # Gemma 4's vision tower wraps Linear in Gemma4ClippableLinear which PEFT
+    # does not recognise. Restrict LoRA to language-model nn.Linear layers.
+    suffix_pat = re.compile(rf".*\.({'|'.join(map(re.escape, suffixes))})$")
+    target_modules = [
+        n for n, m in model.named_modules()
+        if "language_model" in n and isinstance(m, torch.nn.Linear) and suffix_pat.match(n)
+    ]
+    print(f"LoRA targets: {len(target_modules)} layers (e.g. {target_modules[:3]})", flush=True)
     lora_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
         r=args.lora_r,
