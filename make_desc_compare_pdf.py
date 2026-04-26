@@ -29,16 +29,29 @@ from matplotlib.gridspec import GridSpec
 
 
 CN_FONTS = ["PingFang HK", "PingFang SC", "Heiti TC", "STHeiti",
-            "Arial Unicode MS", "Songti SC", "Hiragino Sans GB"]
+            "Arial Unicode MS", "Songti SC", "Hiragino Sans GB",
+            "Droid Sans Fallback", "Noto Sans CJK SC"]
+CN_FONT_FILES = [
+    "/usr/share/fonts/google-droid/DroidSansFallback.ttf",  # CSC default CJK font
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+]
 
 
 def setup_cn_font():
+    # Try registering known TTF/TTC paths first (works even if fc-cache missed them)
+    for path in CN_FONT_FILES:
+        if os.path.exists(path):
+            try:
+                matplotlib.font_manager.fontManager.addfont(path)
+            except Exception:
+                pass
     for f in CN_FONTS:
         try:
             matplotlib.font_manager.findfont(f, fallback_to_default=False)
             matplotlib.rcParams["font.family"] = ["sans-serif"]
             matplotlib.rcParams["font.sans-serif"] = [f, "DejaVu Sans"]
             matplotlib.rcParams["axes.unicode_minus"] = False
+            print(f"Using CJK font: {f}", flush=True)
             return f
         except Exception:
             continue
