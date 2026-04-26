@@ -140,11 +140,29 @@ def compute_log_probs(model, tokenizer, prompt, description, device):
 # Per-class GRPO step
 # ============================================================
 
+def encode_text_via_llm(llm, tokenizer, desc, proj, device, max_len=256):
+    """Coupled judge: mean-pool LLM last hidden states, project to image-emb dim.
+    Uses the same Qwen LoRA model that generates the descriptions, so the text
+    representation tracks the current policy's parameters (intentional for the
+    decoupling ablation)."""
+    if len(desc.strip()) == 0:
+        desc = " "
+    enc = tokenizer(desc, return_tensors="pt", truncation=True, max_length=max_len).to(device)
+    with torch.no_grad():
+        out = llm(**enc, output_hidden_states=True, return_dict=True)
+    last = out.hidden_states[-1]  # [1, T, H]
+    mask = enc["attention_mask"].unsqueeze(-1).float()
+    pooled = (last.float() * mask).sum(1) / mask.sum(1).clamp(min=1)  # [1, H]
+    emb = proj(pooled)  # [1, img_dim]
+    return F.normalize(emb, dim=-1)
+
+
 def grpo_class_step(llm, ref_lora_state, tokenizer, reward_model, text_encoder_tokenizer,
                     class_image_embs, label_name, correct_idx, mean_image_embs,
                     device, G=8, temperature=0.8, max_new_tokens=80,
                     epsilon=0.2, beta_kl=0.04,
-                    alpha=1.0, beta_r=0.3, gamma=0.2):
+                    alpha=1.0, beta_r=0.3, gamma=0.2,
+                    coupled_judge=False, coupled_proj=None):
     """One GRPO step for an entire class.
 
     Generates G descriptions once, evaluates against all samples of the class,
@@ -174,22 +192,30 @@ def grpo_class_step(llm, ref_lora_state, tokenizer, reward_model, text_encoder_t
         desc = tokenizer.decode(outputs[i][prompt_ids["input_ids"].shape[1]:], skip_special_tokens=True).strip()
         descriptions.append(desc)
 
-    # 2. Encode descriptions through reward model (once per class)
+    # 2. Encode descriptions (once per class). Decoupled judge uses MiniLM via
+    # reward_model.encode_text; coupled judge re-uses the LLM itself.
     text_embs = []
     r3_scores = []
-    reward_model.eval()
-    with torch.no_grad():
+    if coupled_judge:
+        # llm is still in eval() from generate(); keep it that way for encoding.
         for desc in descriptions:
-            desc_tokens = text_encoder_tokenizer(
-                desc, return_tensors="pt", padding=True, truncation=True, max_length=CFG.max_length
-            ).to(device)
-            text_emb = reward_model.encode_text(
-                input_ids=desc_tokens["input_ids"],
-                attention_mask=desc_tokens["attention_mask"],
-            )
-            text_emb = F.normalize(text_emb, dim=-1)
+            text_emb = encode_text_via_llm(llm, tokenizer, desc, coupled_proj, device)
             text_embs.append(text_emb)
             r3_scores.append(compute_R3(desc, tokenizer))
+    else:
+        reward_model.eval()
+        with torch.no_grad():
+            for desc in descriptions:
+                desc_tokens = text_encoder_tokenizer(
+                    desc, return_tensors="pt", padding=True, truncation=True, max_length=CFG.max_length
+                ).to(device)
+                text_emb = reward_model.encode_text(
+                    input_ids=desc_tokens["input_ids"],
+                    attention_mask=desc_tokens["attention_mask"],
+                )
+                text_emb = F.normalize(text_emb, dim=-1)
+                text_embs.append(text_emb)
+                r3_scores.append(compute_R3(desc, tokenizer))
 
     # 3. Compute rewards for all samples × all descriptions
     M = class_image_embs.shape[0]  # number of samples in this class
@@ -293,6 +319,10 @@ def main():
     parser.add_argument("--beta_r", type=float, default=0.3, help="R2 weight")
     parser.add_argument("--gamma", type=float, default=0.2, help="R3 weight")
     parser.add_argument("--ckpt_dir", type=str, default=".", help="Directory to save checkpoints")
+    parser.add_argument("--coupled_judge", action="store_true",
+                        help="Decoupling ablation: use the same Qwen LoRA model as the judge "
+                             "(mean-pool last-layer hidden states + fixed random projection to "
+                             "image-emb dim). Otherwise the default decoupled MiniLM judge is used.")
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -364,6 +394,23 @@ def main():
 
     text_encoder_tokenizer = CFG.tokenizer
 
+    # Coupled-judge ablation: build a fixed random projection from LLM hidden
+    # dim to image-embedding dim. The image embeddings remain those of the
+    # frozen MCL base; the projection is intentionally untrained so the
+    # comparison only varies the text-side encoder (Qwen-self vs MiniLM).
+    coupled_proj = None
+    if args.coupled_judge:
+        llm_hidden = llm.config.hidden_size
+        img_dim = mean_image_embs.shape[-1]
+        gen = torch.Generator(device="cpu").manual_seed(args.seed)
+        coupled_proj = torch.nn.Linear(llm_hidden, img_dim, bias=False).to(device)
+        with torch.no_grad():
+            w = torch.randn(img_dim, llm_hidden, generator=gen) * (1.0 / llm_hidden ** 0.5)
+            coupled_proj.weight.copy_(w.to(coupled_proj.weight.dtype).to(device))
+        for p in coupled_proj.parameters():
+            p.requires_grad = False
+        print(f"[coupled_judge] LLM hidden={llm_hidden} -> img_dim={img_dim} via fixed random proj.")
+
     print(f"\nGRPO Training (per-class): {args.epochs} epochs, G={args.G}, lr={args.lr}")
     print(f"Classes: {num_classes}, ~{len(image_embs)//num_classes} samples/class\n")
 
@@ -384,6 +431,7 @@ def main():
                 device, G=args.G, temperature=args.temperature,
                 epsilon=args.epsilon, beta_kl=args.beta_kl,
                 alpha=args.alpha, beta_r=args.beta_r, gamma=args.gamma,
+                coupled_judge=args.coupled_judge, coupled_proj=coupled_proj,
             )
 
             optimizer.zero_grad()
