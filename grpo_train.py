@@ -49,14 +49,14 @@ def compute_R2(text_emb, image_emb, mean_image_embs, correct_idx):
     return F.cosine_similarity(text_emb, image_emb, dim=-1).item()
 
 
-def compute_R3(description, tokenizer, min_len=10, max_len=80):
+def compute_R3(description, tokenizer, min_len=10, max_len=80, div_thresh=0.5):
     """Quality reward: rule-based checks on generation quality."""
     tokens = tokenizer.encode(description)
     score = 1.0
     if len(tokens) < min_len or len(tokens) > max_len:
         score -= 0.5
     words = description.lower().split()
-    if len(words) > 0 and len(set(words)) / len(words) < 0.5:
+    if len(words) > 0 and len(set(words)) / len(words) < div_thresh:
         score -= 0.5
     return max(score, 0.0)
 
@@ -162,6 +162,7 @@ def grpo_class_step(llm, ref_lora_state, tokenizer, reward_model, text_encoder_t
                     device, G=8, temperature=0.8, max_new_tokens=80,
                     epsilon=0.2, beta_kl=0.04,
                     alpha=1.0, beta_r=0.3, gamma=0.2,
+                    r3_min_len=10, r3_max_len=80, r3_div=0.5,
                     coupled_judge=False, coupled_proj=None):
     """One GRPO step for an entire class.
 
@@ -201,7 +202,7 @@ def grpo_class_step(llm, ref_lora_state, tokenizer, reward_model, text_encoder_t
         for desc in descriptions:
             text_emb = encode_text_via_llm(llm, tokenizer, desc, coupled_proj, device)
             text_embs.append(text_emb)
-            r3_scores.append(compute_R3(desc, tokenizer))
+            r3_scores.append(compute_R3(desc, tokenizer, min_len=r3_min_len, max_len=r3_max_len, div_thresh=r3_div))
     else:
         reward_model.eval()
         with torch.no_grad():
@@ -215,7 +216,7 @@ def grpo_class_step(llm, ref_lora_state, tokenizer, reward_model, text_encoder_t
                 )
                 text_emb = F.normalize(text_emb, dim=-1)
                 text_embs.append(text_emb)
-                r3_scores.append(compute_R3(desc, tokenizer))
+                r3_scores.append(compute_R3(desc, tokenizer, min_len=r3_min_len, max_len=r3_max_len, div_thresh=r3_div))
 
     # 3. Compute rewards for all samples × all descriptions
     M = class_image_embs.shape[0]  # number of samples in this class
@@ -318,6 +319,9 @@ def main():
     parser.add_argument("--alpha", type=float, default=1.0, help="R1 weight")
     parser.add_argument("--beta_r", type=float, default=0.3, help="R2 weight")
     parser.add_argument("--gamma", type=float, default=0.2, help="R3 weight")
+    parser.add_argument("--r3_min_len", type=int, default=10, help="R3 min token length")
+    parser.add_argument("--r3_max_len", type=int, default=80, help="R3 max token length")
+    parser.add_argument("--r3_div", type=float, default=0.5, help="R3 lexical-diversity threshold")
     parser.add_argument("--ckpt_dir", type=str, default=".", help="Directory to save checkpoints")
     parser.add_argument("--coupled_judge", action="store_true",
                         help="Decoupling ablation: use the same Qwen LoRA model as the judge "
@@ -431,6 +435,7 @@ def main():
                 device, G=args.G, temperature=args.temperature,
                 epsilon=args.epsilon, beta_kl=args.beta_kl,
                 alpha=args.alpha, beta_r=args.beta_r, gamma=args.gamma,
+                r3_min_len=args.r3_min_len, r3_max_len=args.r3_max_len, r3_div=args.r3_div,
                 coupled_judge=args.coupled_judge, coupled_proj=coupled_proj,
             )
 

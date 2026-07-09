@@ -2,7 +2,7 @@
 #SBATCH --job-name=TCSVT2026_S2
 #SBATCH --account=project_2014500
 #SBATCH --partition=gpusmall
-#SBATCH --time=12:00:00
+#SBATCH --time=6:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=10
