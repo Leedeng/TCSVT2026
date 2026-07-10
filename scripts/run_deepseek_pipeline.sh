@@ -12,8 +12,9 @@
 #SBATCH --error=logs/ds_pipe_%x_%j.err
 
 # R2-5: full pipeline on DeepSeek open-model seed corpus (SFT -> GRPO -> retrain).
-# The frozen reward model is the same as the main run (judge held fixed; only the
-# seed source changes). Usage: sbatch scripts/run_deepseek_pipeline.sh [DATASET]
+# The frozen reward model is the same GPT-seed-trained MCL as the main run (judge
+# held fixed; only the seed source changes). Usage:
+#   sbatch scripts/run_deepseek_pipeline.sh [iMiGUE|SMG|MA52]
 
 source ~/.bashrc
 conda activate SPL2023
@@ -21,9 +22,16 @@ cd /scratch/project_2014500/dengli/TCSVT2026
 
 DS=${1:-iMiGUE}
 SEED=descriptions/${DS}_descriptions_deepseek.json
-REWARD=/scratch/project_2018653/dengli/TCSVT2026/ckpt/iMiGUE/desc_v2/0.66_iMiGUE_desc_v2.pt
+CKROOT=/scratch/project_2018653/dengli/TCSVT2026/ckpt
+case $DS in
+  iMiGUE) REWARD=$CKROOT/iMiGUE/desc_v2/0.66_iMiGUE_desc_v2.pt ;;
+  SMG)    REWARD=$CKROOT/SMG/desc_v2/0.64_SMG_desc_v2.pt ;;
+  MA52)   REWARD=$CKROOT/MA52/desc_v2/0.6_MA52_desc_v2.pt ;;
+  *) echo "unknown dataset $DS"; exit 1 ;;
+esac
 OUT=ckpt/${DS}/deepseek
 mkdir -p $OUT descriptions logs
+echo "dataset=$DS  reward=$REWARD"
 
 echo '===== 1) SFT Qwen on DeepSeek seeds ====='
 python sft_train.py --dataset $DS --desc_file $SEED --save_suffix deepseek \
