@@ -117,6 +117,10 @@ def main():
     parser.add_argument("--lora_r", type=int, default=8)
     parser.add_argument("--lora_alpha", type=int, default=16)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--desc_file", type=str, default=None,
+                        help="Seed description JSON (default: descriptions/{dataset}_descriptions.json)")
+    parser.add_argument("--save_suffix", type=str, default=None,
+                        help="Override the save-dir suffix (default: base model name)")
     args = parser.parse_args()
 
     random.seed(args.seed)
@@ -124,7 +128,8 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Load descriptions
-    desc_path = f"descriptions/{args.dataset}_descriptions.json"
+    desc_path = args.desc_file or f"descriptions/{args.dataset}_descriptions.json"
+    print(f"Seed descriptions: {desc_path}")
     with open(desc_path) as f:
         descriptions = json.load(f)
     labels = list(descriptions.keys())
@@ -222,7 +227,7 @@ def main():
         # Save best model
         if eval_loss < best_eval_loss:
             best_eval_loss = eval_loss
-            save_path = f"sft_{args.dataset}_{args.model_name.split('/')[-1]}"
+            save_path = f"sft_{args.dataset}_{args.save_suffix or args.model_name.split('/')[-1]}"
             model.save_pretrained(save_path)
             tokenizer.save_pretrained(save_path)
             print(f"Saved best model to {save_path}/ (eval_loss={eval_loss:.4f})")
