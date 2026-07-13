@@ -92,6 +92,10 @@ def main():
     ap.add_argument("--dataset", required=True)
     ap.add_argument("--reward_model", required=True, help="Frozen judge checkpoint (.pt)")
     ap.add_argument("--final_model", required=True, help="Final recognition checkpoint (.pt)")
+    ap.add_argument("--baseline_model", default=None,
+                    help="Short-label baseline checkpoint (.pt). If given, also correlate the "
+                         "reward with the per-class accuracy GAIN (final - baseline), which "
+                         "controls for intrinsic class difficulty.")
     ap.add_argument("--desc_file", default=None, help="GRPO descriptions JSON")
     ap.add_argument("--output", default=None)
     args = ap.parse_args()
@@ -123,16 +127,35 @@ def main():
     final.load_state_dict(torch.load(args.final_model, map_location=device))
     test_loader = get_dataloader(ds, mode="testing", label_names=labels)
     accs = per_class_accuracy(final, test_loader, num_classes, device)
+    del final
+    torch.cuda.empty_cache()
+
+    # --- optional: per-class accuracy of the short-label baseline (for the gain) ---
+    base_accs = None
+    if args.baseline_model:
+        print(f"Loading short-label baseline: {args.baseline_model}")
+        base = VideoCLIPModel(num_classes=num_classes).to(device)
+        base.load_state_dict(torch.load(args.baseline_model, map_location=device))
+        base_accs = per_class_accuracy(base, test_loader, num_classes, device)
+        del base
+        torch.cuda.empty_cache()
 
     # --- correlation ---
-    mask = ~np.isnan(rewards) & ~np.isnan(accs)
-    r_p = pearson(rewards[mask], accs[mask])
-    r_s = spearman(rewards[mask], accs[mask])
-    print(f"\n=== {ds}: reward-accuracy correlation over {mask.sum()} classes ===")
-    print(f"Pearson r  = {r_p:.3f}")
-    print(f"Spearman rho = {r_s:.3f}")
+    def report(name, x, y):
+        m = ~np.isnan(x) & ~np.isnan(y)
+        print(f"\n=== {ds}: {name} over {m.sum()} classes ===")
+        print(f"Pearson r    = {pearson(x[m], y[m]):.3f}")
+        print(f"Spearman rho = {spearman(x[m], y[m]):.3f}")
 
-    df = pd.DataFrame({"class": labels, "reward_R1": rewards, "acc@1": accs})
+    report("reward vs. absolute accuracy", rewards, accs)
+    cols = {"class": labels, "reward_R1": rewards, "acc@1": accs}
+    if base_accs is not None:
+        gain = accs - base_accs
+        report("reward vs. accuracy GAIN over short-label baseline", rewards, gain)
+        cols["baseline_acc@1"] = base_accs
+        cols["gain"] = gain
+
+    df = pd.DataFrame(cols)
     df = df.sort_values("reward_R1", ascending=False)
     out = args.output or f"reward_acc_{ds}.csv"
     df.to_csv(out, index=False)
