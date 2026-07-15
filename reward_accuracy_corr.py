@@ -48,10 +48,12 @@ def per_class_reward(judge, labels, descriptions, mean_image_embs, device):
     """Mean alignment reward R1 per class over that class's descriptions."""
     judge.eval()
     tok = CFG.tokenizer
+    # match descriptions by stripped name (label files may differ in trailing spaces)
+    desc_map = {k.strip(): v for k, v in descriptions.items()}
     rewards = np.full(len(labels), np.nan)
     with torch.no_grad():
         for c, name in enumerate(labels):
-            descs = descriptions.get(name, [])
+            descs = desc_map.get(name.strip(), [])
             if not descs:
                 continue
             r1s = []
@@ -97,13 +99,16 @@ def main():
                          "reward with the per-class accuracy GAIN (final - baseline), which "
                          "controls for intrinsic class difficulty.")
     ap.add_argument("--desc_file", default=None, help="GRPO descriptions JSON")
+    ap.add_argument("--label_file", default=None,
+                    help="Class label CSV (default: {dataset}/Clip_label.csv). Use the label "
+                         "order that the final/judge models were trained with.")
     ap.add_argument("--output", default=None)
     args = ap.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ds = args.dataset.rstrip("/")
 
-    labels = list(pd.read_csv(f"{ds}/Clip_label.csv")["name"].values)
+    labels = list(pd.read_csv(args.label_file or f"{ds}/Clip_label.csv")["name"].values)
     num_classes = len(labels)
     desc_path = args.desc_file or f"descriptions/{ds}_grpo_descriptions.json"
     descriptions = json.load(open(desc_path))
