@@ -44,28 +44,30 @@ def spearman(x, y):
     return pearson(rx, ry)
 
 
-def per_class_reward(judge, labels, descriptions, mean_image_embs, device):
-    """Mean alignment reward R1 per class over that class's descriptions."""
+def per_class_cos_reward(judge, labels, texts_per_class, mean_image_embs, device):
+    """Mean cosine similarity between each class's text(s) and its own visual
+    centroid. Continuous (unlike the saturated rank reward R1), so it varies with
+    how well the text aligns with the class. `texts_per_class` maps stripped class
+    name -> list of texts (descriptions, or the single short label)."""
     judge.eval()
     tok = CFG.tokenizer
-    # match descriptions by stripped name (label files may differ in trailing spaces)
-    desc_map = {k.strip(): v for k, v in descriptions.items()}
-    rewards = np.full(len(labels), np.nan)
+    cen = mean_image_embs.to(device)
+    out = np.full(len(labels), np.nan)
     with torch.no_grad():
         for c, name in enumerate(labels):
-            descs = desc_map.get(name.strip(), [])
-            if not descs:
+            texts = texts_per_class.get(name.strip(), [])
+            if not texts:
                 continue
-            r1s = []
-            for d in descs:
-                enc = tok(d, return_tensors="pt", padding=True, truncation=True,
+            sims = []
+            for txt in texts:
+                enc = tok(txt, return_tensors="pt", padding=True, truncation=True,
                           max_length=CFG.max_length).to(device)
-                t = judge.encode_text(input_ids=enc["input_ids"],
+                e = judge.encode_text(input_ids=enc["input_ids"],
                                       attention_mask=enc["attention_mask"])
-                t = F.normalize(t, dim=-1)
-                r1s.append(compute_R1(t, mean_image_embs.to(device), c))
-            rewards[c] = float(np.mean(r1s))
-    return rewards
+                e = F.normalize(e, dim=-1)
+                sims.append(F.cosine_similarity(e, cen[c:c + 1], dim=-1).item())
+            out[c] = float(np.mean(sims))
+    return out
 
 
 def per_class_accuracy(model, test_loader, num_classes, device):
@@ -122,7 +124,11 @@ def main():
     train_loader = get_dataloader(ds, mode="training", label_names=labels)
     image_embs, label_idx, _ = pre_encode_videos(judge, train_loader, device)
     mean_image_embs = compute_mean_class_embs(image_embs, label_idx, num_classes)
-    rewards = per_class_reward(judge, labels, descriptions, mean_image_embs, device)
+    # continuous cosine reward for the CroRR descriptions and for the short label
+    desc_map = {k.strip(): v for k, v in descriptions.items()}
+    label_map = {name.strip(): [name] for name in labels}
+    desc_reward = per_class_cos_reward(judge, labels, desc_map, mean_image_embs, device)
+    label_reward = per_class_cos_reward(judge, labels, label_map, mean_image_embs, device)
     del judge
     torch.cuda.empty_cache()
 
@@ -152,16 +158,18 @@ def main():
         print(f"Pearson r    = {pearson(x[m], y[m]):.3f}")
         print(f"Spearman rho = {spearman(x[m], y[m]):.3f}")
 
-    report("reward vs. absolute accuracy", rewards, accs)
-    cols = {"class": labels, "reward_R1": rewards, "acc@1": accs}
+    # connected-scatter data: baseline (short label) vs. method (description)
+    cols = {"class": labels,
+            "reward_label": label_reward, "reward_desc": desc_reward,
+            "method_acc@1": accs}
     if base_accs is not None:
-        gain = accs - base_accs
-        report("reward vs. accuracy GAIN over short-label baseline", rewards, gain)
         cols["baseline_acc@1"] = base_accs
-        cols["gain"] = gain
+        d_reward = desc_reward - label_reward
+        d_acc = accs - base_accs
+        report("delta-reward (desc-label) vs. delta-acc (method-baseline)", d_reward, d_acc)
 
     df = pd.DataFrame(cols)
-    df = df.sort_values("reward_R1", ascending=False)
+    df = df.sort_values("reward_desc", ascending=False)
     out = args.output or f"reward_acc_{ds}.csv"
     df.to_csv(out, index=False)
     print(f"Saved per-class table to {out}")
