@@ -28,7 +28,7 @@ from tqdm import tqdm
 from config import CFG
 from dataset import get_dataloader
 from models import VideoCLIPModel
-from grpo_train import pre_encode_videos, compute_mean_class_embs, compute_R1
+from grpo_train import pre_encode_videos, compute_mean_class_embs, compute_R3
 
 
 def pearson(x, y):
@@ -44,30 +44,41 @@ def spearman(x, y):
     return pearson(rx, ry)
 
 
-def per_class_cos_reward(judge, labels, texts_per_class, mean_image_embs, device):
-    """Mean cosine similarity between each class's text(s) and its own visual
-    centroid. Continuous (unlike the saturated rank reward R1), so it varies with
-    how well the text aligns with the class. `texts_per_class` maps stripped class
-    name -> list of texts (descriptions, or the single short label)."""
+def per_class_components(judge, labels, texts_per_class, mean_image_embs, class_embs, device):
+    """Per-class reward components, averaged over each class's text(s):
+      R_cls  : cosine(text, class centroid)          -- class-level visual alignment
+      R_intra: mean cosine(text, each member video)  -- intra-class visual grounding
+      R_tok  : rule-based token quality (length/diversity) -- textual, non-visual
+    `texts_per_class` maps stripped class name -> list of texts."""
     judge.eval()
     tok = CFG.tokenizer
     cen = mean_image_embs.to(device)
-    out = np.full(len(labels), np.nan)
+    C = len(labels)
+    r_cls = np.full(C, np.nan)
+    r_intra = np.full(C, np.nan)
+    r_tok = np.full(C, np.nan)
     with torch.no_grad():
         for c, name in enumerate(labels):
             texts = texts_per_class.get(name.strip(), [])
             if not texts:
                 continue
-            sims = []
+            members = class_embs.get(c)  # [M, D] normalized, or None
+            cls_s, intra_s, tok_s = [], [], []
             for txt in texts:
                 enc = tok(txt, return_tensors="pt", padding=True, truncation=True,
                           max_length=CFG.max_length).to(device)
                 e = judge.encode_text(input_ids=enc["input_ids"],
                                       attention_mask=enc["attention_mask"])
                 e = F.normalize(e, dim=-1)
-                sims.append(F.cosine_similarity(e, cen[c:c + 1], dim=-1).item())
-            out[c] = float(np.mean(sims))
-    return out
+                cls_s.append(F.cosine_similarity(e, cen[c:c + 1], dim=-1).item())
+                if members is not None and len(members):
+                    intra_s.append(F.cosine_similarity(e, members.to(device), dim=-1).mean().item())
+                tok_s.append(compute_R3(txt, tok))
+            r_cls[c] = float(np.mean(cls_s))
+            if intra_s:
+                r_intra[c] = float(np.mean(intra_s))
+            r_tok[c] = float(np.mean(tok_s))
+    return r_cls, r_intra, r_tok
 
 
 def per_class_accuracy(model, test_loader, num_classes, device):
@@ -124,11 +135,17 @@ def main():
     train_loader = get_dataloader(ds, mode="training", label_names=labels)
     image_embs, label_idx, _ = pre_encode_videos(judge, train_loader, device)
     mean_image_embs = compute_mean_class_embs(image_embs, label_idx, num_classes)
-    # continuous cosine reward for the CroRR descriptions and for the short label
+    # group member video embeddings by class (for the intra-class reward)
+    class_embs = {}
+    for i in range(len(image_embs)):
+        class_embs.setdefault(label_idx[i].item(), []).append(image_embs[i])
+    for c in class_embs:
+        class_embs[c] = torch.stack(class_embs[c])
+    # per-class reward components for the CroRR descriptions and for the short label
     desc_map = {k.strip(): v for k, v in descriptions.items()}
     label_map = {name.strip(): [name] for name in labels}
-    desc_reward = per_class_cos_reward(judge, labels, desc_map, mean_image_embs, device)
-    label_reward = per_class_cos_reward(judge, labels, label_map, mean_image_embs, device)
+    R_cls, R_intra, R_tok = per_class_components(judge, labels, desc_map, mean_image_embs, class_embs, device)
+    label_reward, _, _ = per_class_components(judge, labels, label_map, mean_image_embs, class_embs, device)
     del judge
     torch.cuda.empty_cache()
 
@@ -158,18 +175,19 @@ def main():
         print(f"Pearson r    = {pearson(x[m], y[m]):.3f}")
         print(f"Spearman rho = {spearman(x[m], y[m]):.3f}")
 
-    # connected-scatter data: baseline (short label) vs. method (description)
     cols = {"class": labels,
-            "reward_label": label_reward, "reward_desc": desc_reward,
-            "method_acc@1": accs}
+            "R_cls": R_cls, "R_intra": R_intra, "R_tok": R_tok,
+            "reward_label": label_reward, "method_acc@1": accs}
     if base_accs is not None:
         cols["baseline_acc@1"] = base_accs
-        d_reward = desc_reward - label_reward
         d_acc = accs - base_accs
-        report("delta-reward (desc-label) vs. delta-acc (method-baseline)", d_reward, d_acc)
+        # the correct form: each reward component vs. per-class accuracy GAIN
+        report("R_cls   vs. delta-acc", R_cls, d_acc)
+        report("R_intra vs. delta-acc", R_intra, d_acc)
+        report("R_tok   vs. delta-acc", R_tok, d_acc)
 
     df = pd.DataFrame(cols)
-    df = df.sort_values("reward_desc", ascending=False)
+    df = df.sort_values("R_cls", ascending=False)
     out = args.output or f"reward_acc_{ds}.csv"
     df.to_csv(out, index=False)
     print(f"Saved per-class table to {out}")
