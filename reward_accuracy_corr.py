@@ -121,7 +121,9 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ds = args.dataset.rstrip("/")
 
-    labels = list(pd.read_csv(args.label_file or f"{ds}/Clip_label.csv")["name"].values)
+    # strip names so an old-order label file (with trailing spaces) still matches the
+    # trimmed captions in the data, while preserving the model's class order.
+    labels = [str(x).strip() for x in pd.read_csv(args.label_file or f"{ds}/Clip_label.csv")["name"].values]
     num_classes = len(labels)
     desc_path = args.desc_file or f"descriptions/{ds}_grpo_descriptions.json"
     descriptions = json.load(open(desc_path))
